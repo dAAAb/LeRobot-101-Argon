@@ -1,0 +1,78 @@
+{
+ "status": "found",
+ "attempts": [
+  {
+   "target": [
+    0.39,
+    -0.05
+   ],
+   "pose": {
+    "shoulder_pan": 2039,
+    "shoulder_lift": 1518,
+    "elbow_flex": 2719,
+    "wrist_flex": 2183,
+    "wrist_roll": 637
+   },
+   "image": "search_0.jpg",
+   "detected": false,
+   "ambiguous": false
+  },
+  {
+   "target": [
+    0.37,
+    -0.02
+   ],
+   "pose": {
+    "shoulder_pan": 1959,
+    "shoulder_lift": 1368,
+    "elbow_flex": 2784,
+    "wrist_flex": 2290,
+    "wrist_roll": 578
+   },
+   "image": "search_1.jpg",
+   "detected": true,
+   "ambiguous": false
+  }
+ ],
+ "T_base_board": [
+  [
+   -0.048664190292365406,
+   -0.9987671575000123,
+   -0.009796003395971864,
+   0.38209382765627464
+  ],
+  [
+   -0.9988062638455047,
+   0.04870289308466569,
+   -0.0037517340214019146,
+   0.05232324914783591
+  ],
+  [
+   0.004224202430302776,
+   0.009601734454204425,
+   -0.9999449798910433,
+   -0.0032925982491538164
+  ],
+  [
+   0.0,
+   0.0,
+   0.0,
+   1.0
+  ]
+ ],
+ "centre_mm": [
+  328.3,
+  -25.1,
+  -2.5
+ ],
+ "tilt_deg": 0.6010358048866394,
+ "height_vs_table_mm": -1.9523406527122378,
+ "search_pose": {
+  "shoulder_pan": 1964.0,
+  "shoulder_lift": 1378.0,
+  "elbow_flex": 2787.0,
+  "wrist_flex": 2288.0,
+  "wrist_roll": 583.0
+ },
+ "image": "search_1.jpg"
+}

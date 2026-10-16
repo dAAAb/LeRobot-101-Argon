@@ -1,0 +1,165 @@
+{
+ "schema_version": 1,
+ "source": "wrist-only",
+ "calibration_revision": "kinematic-model-20261002",
+ "camera_id": "0x12100029930858",
+ "mount_revision": "existing-mount-unverified",
+ "geometry_revision": "5d093808d8e140c4560890e50f7859e72e35a2dcaccbb221835b71022c0bcf87",
+ "native_image_size": [
+  1920,
+  1080
+ ],
+ "image_size": [
+  1920,
+  1080
+ ],
+ "camera_matrix": [
+  [
+   964.2336816232754,
+   0.0,
+   881.207405821876
+  ],
+  [
+   0.0,
+   963.2558645385196,
+   507.93798681378286
+  ],
+  [
+   0.0,
+   0.0,
+   1.0
+  ]
+ ],
+ "distortion": [
+  0.1652489039765234,
+  -0.22149586093748141,
+  0.0010206272227781825,
+  0.0014039542610401873,
+  0.09481384076215142
+ ],
+ "distortion_model": "opencv-brown",
+ "handeye": [
+  [
+   0.9951445022416652,
+   0.08851731044395966,
+   0.04303609426929467,
+   -0.0037740928448212565
+  ],
+  [
+   0.0984238548011695,
+   -0.8931645509982378,
+   -0.4388277904214755,
+   0.06770795470660587
+  ],
+  [
+   -0.00040554194142221334,
+   0.4409328413623596,
+   -0.8975400074335682,
+   -0.004590924671832287
+  ],
+  [
+   0.0,
+   0.0,
+   0.0,
+   1.0
+  ]
+ ],
+ "validated_components": [
+  "intrinsics",
+  "handeye",
+  "robot_geometry"
+ ],
+ "validation_id": "kinematic-fadc289b23a4c11fcead32110203887fadb2590d",
+ "validation_kind": "independent-heldout",
+ "validation_scope": {
+  "kind": "kinematic-model-joint-ranges",
+  "note": "Joint offsets fitted from three checkerboard placements; bounds are the onboard motor ranges. Leave-one-placement-out extrapolation error up to ~10 mm (see docs/KINEMATIC_CALIBRATION_2026-10-01.md).",
+  "joint_raw_bounds": {
+   "shoulder_pan": [
+    838,
+    3463
+   ],
+   "shoulder_lift": [
+    877,
+    3282
+   ],
+   "elbow_flex": [
+    843,
+    3045
+   ],
+   "wrist_flex": [
+    822,
+    2784
+   ],
+   "wrist_roll": [
+    0,
+    4095
+   ]
+  },
+  "board_plane_base": [
+   [
+    0.9998639646752772,
+    -6.978574791143539e-05,
+    0.016493855637346445,
+    -4.725616248557187e-05
+   ],
+   [
+    -6.978574791143539e-05,
+    0.999964200103014,
+    0.008461302635473946,
+    -2.4242281548541706e-05
+   ],
+   [
+    -0.016493855637346445,
+    -0.008461302635473946,
+    0.9998281647782911,
+    -0.0028645844398826922
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ]
+ },
+ "board_session_id": "kinematic-model-20261002",
+ "metric_calibrated": true,
+ "needs_more_views": false,
+ "metric_accuracy": "measured-heldout",
+ "grasp_ready": false,
+ "uncertainty_interpretation": "Held-out views of three board placements: board-corner 3D error max (base position); camera pose from the FK chain vs PnP on the fitted board, max translation and rotation (relative). Includes PnP noise.",
+ "relative_translation_uncertainty_m": 0.00698,
+ "base_position_uncertainty_m": 0.00449,
+ "relative_rotation_uncertainty_deg": 1.3953,
+ "focal_relative_uncertainty": 0.005,
+ "kinematic_model": {
+  "path": "config/calibration/kinematic-model-20261002.json",
+  "offsets_ticks": {
+   "shoulder_pan": 0.0,
+   "shoulder_lift": -21.33,
+   "elbow_flex": 31.82,
+   "wrist_flex": -15.59,
+   "wrist_roll": 0.0
+  },
+  "sessions": [
+   "session-20261001-173458",
+   "session-20261001-184230",
+   "session-20261002-150606"
+  ],
+  "heldout_board_corner_mm": {
+   "median": 2.77,
+   "max": 4.49
+  },
+  "heldout_camera_translation_mm": {
+   "median": 2.98,
+   "max": 6.98
+  },
+  "heldout_camera_rotation_deg": {
+   "median": 0.53,
+   "max": 1.395
+  },
+  "table_tilt_deg": 1.062,
+  "table_z_m": -0.0028650767609831288
+ }
+}

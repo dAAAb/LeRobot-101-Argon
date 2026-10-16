@@ -1,0 +1,10 @@
+torch==2.8.0
+transformers==4.44.2
+numpy==2.2.6
+sentencepiece==0.2.1
+protobuf==5.29.5
+fastapi==0.116.1
+uvicorn==0.35.0
+httpx==0.28.1
+mlx==0.32.3
+mlx-metal==0.32.3

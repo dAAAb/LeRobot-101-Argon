@@ -1,0 +1,148 @@
+{
+ "session": "hover-20261005-113334",
+ "started": "2026-10-05 11:33:35",
+ "steps": [
+  {
+   "waypoint_mm": 80,
+   "try": 0,
+   "commanded": {
+    "shoulder_pan": 1722,
+    "shoulder_lift": 2264,
+    "elbow_flex": 1849,
+    "wrist_flex": 2724,
+    "wrist_roll": 1059
+   },
+   "measured": {
+    "shoulder_pan": 1718,
+    "shoulder_lift": 2268,
+    "elbow_flex": 1885,
+    "wrist_flex": 2721,
+    "wrist_roll": 1051
+   },
+   "measured_gap_mm": 66.54,
+   "lateral_mm": 8.22,
+   "mesh_min_mm": 65.5,
+   "mesh_min_link": "moving_jaw",
+   "settled": true,
+   "move": {
+    "seconds": 16.16,
+    "peak_tracking_ticks": {
+     "shoulder_pan": 6.8,
+     "shoulder_lift": 6.2,
+     "elbow_flex": 48.6,
+     "wrist_flex": 8.1,
+     "wrist_roll": 14.0
+    }
+   }
+  },
+  {
+   "waypoint_mm": 40,
+   "try": 0,
+   "commanded": {
+    "shoulder_pan": 1722,
+    "shoulder_lift": 2398,
+    "elbow_flex": 1796,
+    "wrist_flex": 2724,
+    "wrist_roll": 1073
+   },
+   "measured": {
+    "shoulder_pan": 1718,
+    "shoulder_lift": 2404,
+    "elbow_flex": 1827,
+    "wrist_flex": 2721,
+    "wrist_roll": 1067
+   },
+   "measured_gap_mm": 28.21,
+   "lateral_mm": 8.71,
+   "mesh_min_mm": 27.4,
+   "mesh_min_link": "moving_jaw",
+   "settled": true,
+   "move": {
+    "seconds": 2.51,
+    "peak_tracking_ticks": {
+     "shoulder_pan": 4.0,
+     "shoulder_lift": 6.0,
+     "elbow_flex": 40.0,
+     "wrist_flex": 3.0,
+     "wrist_roll": 10.3
+    }
+   }
+  },
+  {
+   "waypoint_mm": 25,
+   "try": 0,
+   "commanded": {
+    "shoulder_pan": 1722,
+    "shoulder_lift": 2453,
+    "elbow_flex": 1767,
+    "wrist_flex": 2724,
+    "wrist_roll": 1076
+   },
+   "measured": {
+    "shoulder_pan": 1718,
+    "shoulder_lift": 2460,
+    "elbow_flex": 1798,
+    "wrist_flex": 2721,
+    "wrist_roll": 1068
+   },
+   "measured_gap_mm": 13.46,
+   "lateral_mm": 9.18,
+   "mesh_min_mm": 12.7,
+   "mesh_min_link": "moving_jaw",
+   "settled": true,
+   "move": {
+    "seconds": 1.03,
+    "peak_tracking_ticks": {
+     "shoulder_pan": 4.0,
+     "shoulder_lift": 7.0,
+     "elbow_flex": 40.0,
+     "wrist_flex": 3.0,
+     "wrist_roll": 8.8
+    }
+   }
+  },
+  {
+   "waypoint_mm": 15,
+   "try": 0,
+   "commanded": {
+    "shoulder_pan": 1722,
+    "shoulder_lift": 2492,
+    "elbow_flex": 1745,
+    "wrist_flex": 2724,
+    "wrist_roll": 1077
+   },
+   "measured": {
+    "shoulder_pan": 1718,
+    "shoulder_lift": 2495,
+    "elbow_flex": 1778,
+    "wrist_flex": 2721,
+    "wrist_roll": 1068
+   },
+   "measured_gap_mm": 4.61,
+   "lateral_mm": 9.4,
+   "mesh_min_mm": 3.9,
+   "mesh_min_link": "moving_jaw",
+   "settled": true,
+   "move": {
+    "seconds": 1.0,
+    "peak_tracking_ticks": {
+     "shoulder_pan": 4.0,
+     "shoulder_lift": 7.0,
+     "elbow_flex": 36.1,
+     "wrist_flex": 3.0,
+     "wrist_roll": 9.0
+    }
+   }
+  }
+ ],
+ "status": "aborted",
+ "reason": "measured gap 4.6 mm / mesh 3.9 mm below floor",
+ "held": {
+  "shoulder_pan": 1718,
+  "shoulder_lift": 2495,
+  "elbow_flex": 1778,
+  "wrist_flex": 2721,
+  "wrist_roll": 1068
+ },
+ "finished": "2026-10-05 11:34:00"
+}

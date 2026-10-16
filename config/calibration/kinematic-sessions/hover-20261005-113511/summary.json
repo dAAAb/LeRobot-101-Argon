@@ -1,0 +1,214 @@
+{
+ "session": "hover-20261005-113511",
+ "started": "2026-10-05 11:35:12",
+ "steps": [
+  {
+   "waypoint_mm": 80,
+   "try": 0,
+   "commanded": {
+    "shoulder_pan": 1722,
+    "shoulder_lift": 2264,
+    "elbow_flex": 1849,
+    "wrist_flex": 2724,
+    "wrist_roll": 1059
+   },
+   "measured": {
+    "shoulder_pan": 1717,
+    "shoulder_lift": 2268,
+    "elbow_flex": 1885,
+    "wrist_flex": 2721,
+    "wrist_roll": 1052
+   },
+   "measured_gap_mm": 66.54,
+   "lateral_mm": 8.35,
+   "mesh_min_mm": 65.5,
+   "mesh_min_link": "moving_jaw",
+   "settled": true,
+   "move": {
+    "seconds": 16.16,
+    "peak_tracking_ticks": {
+     "shoulder_pan": 7.7,
+     "shoulder_lift": 14.0,
+     "elbow_flex": 46.0,
+     "wrist_flex": 11.0,
+     "wrist_roll": 12.2
+    }
+   },
+   "bias_ticks": {
+    "shoulder_pan": 5,
+    "shoulder_lift": -4,
+    "elbow_flex": -36,
+    "wrist_flex": 3,
+    "wrist_roll": 7
+   }
+  },
+  {
+   "waypoint_mm": 40,
+   "try": 0,
+   "commanded": {
+    "shoulder_pan": 1727,
+    "shoulder_lift": 2394,
+    "elbow_flex": 1760,
+    "wrist_flex": 2727,
+    "wrist_roll": 1080
+   },
+   "measured": {
+    "shoulder_pan": 1723,
+    "shoulder_lift": 2400,
+    "elbow_flex": 1796,
+    "wrist_flex": 2726,
+    "wrist_roll": 1074
+   },
+   "measured_gap_mm": 38.65,
+   "lateral_mm": 0.97,
+   "mesh_min_mm": 37.9,
+   "mesh_min_link": "moving_jaw",
+   "settled": true,
+   "move": {
+    "seconds": 2.44,
+    "peak_tracking_ticks": {
+     "shoulder_pan": 6.7,
+     "shoulder_lift": 6.0,
+     "elbow_flex": 41.3,
+     "wrist_flex": 5.6,
+     "wrist_roll": 10.1
+    }
+   },
+   "bias_ticks": {
+    "shoulder_pan": 4,
+    "shoulder_lift": -6,
+    "elbow_flex": -36,
+    "wrist_flex": 1,
+    "wrist_roll": 6
+   }
+  },
+  {
+   "waypoint_mm": 25,
+   "try": 0,
+   "commanded": {
+    "shoulder_pan": 1726,
+    "shoulder_lift": 2447,
+    "elbow_flex": 1731,
+    "wrist_flex": 2725,
+    "wrist_roll": 1082
+   },
+   "measured": {
+    "shoulder_pan": 1723,
+    "shoulder_lift": 2454,
+    "elbow_flex": 1768,
+    "wrist_flex": 2726,
+    "wrist_roll": 1074
+   },
+   "measured_gap_mm": 24.15,
+   "lateral_mm": 0.98,
+   "mesh_min_mm": 23.4,
+   "mesh_min_link": "moving_jaw",
+   "settled": true,
+   "move": {
+    "seconds": 1.0,
+    "peak_tracking_ticks": {
+     "shoulder_pan": 4.0,
+     "shoulder_lift": 7.0,
+     "elbow_flex": 39.4,
+     "wrist_flex": 1.0,
+     "wrist_roll": 8.0
+    }
+   },
+   "bias_ticks": {
+    "shoulder_pan": 3,
+    "shoulder_lift": -7,
+    "elbow_flex": -37,
+    "wrist_flex": -1,
+    "wrist_roll": 8
+   }
+  },
+  {
+   "waypoint_mm": 15,
+   "try": 0,
+   "commanded": {
+    "shoulder_pan": 1725,
+    "shoulder_lift": 2485,
+    "elbow_flex": 1708,
+    "wrist_flex": 2723,
+    "wrist_roll": 1085
+   },
+   "measured": {
+    "shoulder_pan": 1723,
+    "shoulder_lift": 2490,
+    "elbow_flex": 1740,
+    "wrist_flex": 2726,
+    "wrist_roll": 1078
+   },
+   "measured_gap_mm": 17.02,
+   "lateral_mm": 1.23,
+   "mesh_min_mm": 16.3,
+   "mesh_min_link": "moving_jaw",
+   "settled": true,
+   "move": {
+    "seconds": 1.0,
+    "peak_tracking_ticks": {
+     "shoulder_pan": 3.0,
+     "shoulder_lift": 7.0,
+     "elbow_flex": 38.8,
+     "wrist_flex": 3.0,
+     "wrist_roll": 8.8
+    }
+   },
+   "bias_ticks": {
+    "shoulder_pan": 2,
+    "shoulder_lift": -5,
+    "elbow_flex": -32,
+    "wrist_flex": -3,
+    "wrist_roll": 7
+   }
+  },
+  {
+   "waypoint_mm": 10.0,
+   "try": 0,
+   "commanded": {
+    "shoulder_pan": 1724,
+    "shoulder_lift": 2506,
+    "elbow_flex": 1701,
+    "wrist_flex": 2721,
+    "wrist_roll": 1085
+   },
+   "measured": {
+    "shoulder_pan": 1723,
+    "shoulder_lift": 2512,
+    "elbow_flex": 1733,
+    "wrist_flex": 2726,
+    "wrist_roll": 1078
+   },
+   "measured_gap_mm": 9.68,
+   "lateral_mm": 0.65,
+   "mesh_min_mm": 8.9,
+   "mesh_min_link": "moving_jaw",
+   "settled": true,
+   "move": {
+    "seconds": 1.0,
+    "peak_tracking_ticks": {
+     "shoulder_pan": 2.3,
+     "shoulder_lift": 6.1,
+     "elbow_flex": 35.0,
+     "wrist_flex": 5.0,
+     "wrist_roll": 7.0
+    }
+   },
+   "bias_ticks": {
+    "shoulder_pan": 1,
+    "shoulder_lift": -6,
+    "elbow_flex": -32,
+    "wrist_flex": -5,
+    "wrist_roll": 7
+   }
+  }
+ ],
+ "evidence": {
+  "image": "hover_wrist.jpg",
+  "joint_span": 0,
+  "fk_gap_mm": 9.68,
+  "fk_lateral_mm": 0.65
+ },
+ "status": "completed",
+ "finished": "2026-10-05 11:36:03"
+}

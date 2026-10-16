@@ -1,0 +1,67 @@
+{
+  "scope": "Real MotionGPT joint sequence retargeted onto actual VRM node transforms with three-vrm. No rendered images or semantic-quality score.",
+  "checked_at": "2026-10-08T13:39:18.129Z",
+  "clip": "course/ntu-vh2026/results/motiongpt/right-wave-mps.json",
+  "clip_sha256": "dc24a4153f62958a21dcc162c23f0bdf59cc704a054ecb3919524aec05396859",
+  "prompt": "A person waves their right hand to greet someone.",
+  "frames": 68,
+  "fps": 20,
+  "models": [
+    {
+      "model": "packages/stage-ui/src/assets/vrm/models/AvatarSample-A/AvatarSample_A.vrm",
+      "sha256": "2a0ccd84880b03d7b65503d8b6287f7a97f3bb4fab70a5fd0a47b433c97827f5",
+      "meta_version": "0",
+      "compared_segments": 432,
+      "minimum_direction_cosine": 0.9999999999999996,
+      "checks": {
+        "finite_rotations": true,
+        "source_limb_directions_preserved": true,
+        "root_translation_unchanged": true,
+        "restored_idle_rotations": true,
+        "stopped": true
+      }
+    },
+    {
+      "model": "packages/stage-ui/src/assets/vrm/models/AvatarSample-B/AvatarSample_B.vrm",
+      "sha256": "7fca4a77fdc60ab2c78a9907430744562626180125fa386eb74fb2ea15c2e518",
+      "meta_version": "0",
+      "compared_segments": 432,
+      "minimum_direction_cosine": 0.9999999999999994,
+      "checks": {
+        "finite_rotations": true,
+        "source_limb_directions_preserved": true,
+        "root_translation_unchanged": true,
+        "restored_idle_rotations": true,
+        "stopped": true
+      }
+    },
+    {
+      "model": "../../output/week4_demo/test_no_flux.vrm0.vrm",
+      "sha256": "568e5285e3791bb79293e846526ce507d4770e11675e823067c9fbbe92cf0287",
+      "meta_version": "0",
+      "compared_segments": 432,
+      "minimum_direction_cosine": 0.9999999999999997,
+      "checks": {
+        "finite_rotations": true,
+        "source_limb_directions_preserved": true,
+        "root_translation_unchanged": true,
+        "restored_idle_rotations": true,
+        "stopped": true
+      }
+    },
+    {
+      "model": "../../output/week4_demo/test_no_flux.vrm1.vrm",
+      "sha256": "eea43ce7ada1384bb7150335fe87944d27ccd2e8a6be52b6699c2d1f7548a7c4",
+      "meta_version": "1",
+      "compared_segments": 432,
+      "minimum_direction_cosine": 0.9999999999998304,
+      "checks": {
+        "finite_rotations": true,
+        "source_limb_directions_preserved": true,
+        "root_translation_unchanged": true,
+        "restored_idle_rotations": true,
+        "stopped": true
+      }
+    }
+  ]
+}

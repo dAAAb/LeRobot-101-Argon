@@ -1,0 +1,6 @@
+.venv*/
+.models/
+.upstream/
+__pycache__/
+*.pyc
+.evidence/

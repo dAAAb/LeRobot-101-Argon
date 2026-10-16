@@ -1,0 +1,32 @@
+{
+  "follower_port": "/dev/tty.usbmodem5B415309611",
+  "wrist_camera_name": "icspring camera",
+  "wrist_camera_id": "0x12100029930858",
+  "wrist_capture_width": 1920,
+  "model": "gemini-robotics-er-2-preview",
+  "reasoning_effort": "high",
+  "max_ticks_per_second": 90,
+  "max_tracking_error_ticks": 90,
+  "scan_delta_ticks": 70,
+  "grasp_calibration": null,
+  "experimental_pick_enabled": true,
+  "gaze_wrist_flex": 2320,
+  "validation_objects": {
+    "white_yellow_tube": {
+      "diameter_m": 0.035,
+      "height_m": 0.145,
+      "use": "held-out evaluation only, not planner input"
+    }
+  },
+  "gaze_pan": 2157,
+  "spatial_backend": "v2",
+  "motion_backend": "task_space_v2",
+  "object_model_provider": "geometry",
+  "spatial_calibration_profile": "config/calibration/98986db474f5473593fc6e535d9261ea-9b3d2b4643c2413ca10bcbdf604f78a2-profile.json",
+  "jaw_calibration_profile": "config/calibration/jaw-994751be84ebe980031025af4e1ed570adcb6ade55c3dae00fc24c2c3ade9cb8-profile.json",
+  "kinematic_model": "config/calibration/kinematic-model-20261002.json",
+  "kinematic_model_global": false,
+  "gripper_release_tolerance_ticks": 5,
+  "gripper_low_pwm_cap": 150,
+  "grasp_backend": "kinematic"
+}

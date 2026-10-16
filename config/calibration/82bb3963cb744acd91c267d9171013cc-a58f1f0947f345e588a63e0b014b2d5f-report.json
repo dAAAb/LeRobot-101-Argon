@@ -1,0 +1,532 @@
+{
+  "status": "validated",
+  "source": "wrist-only",
+  "calibration_profile": {
+    "schema_version": 1,
+    "source": "wrist-only",
+    "calibration_revision": "board-21632e45b4c339ec3846",
+    "camera_id": "0x12100029930858",
+    "mount_revision": "existing-mount-unverified",
+    "geometry_revision": "675f5b95123b46a8503285ae2ac2e0eb29618f0ced7be339f6523b59baf90f25",
+    "native_image_size": [
+      1920,
+      1080
+    ],
+    "image_size": [
+      1920,
+      1080
+    ],
+    "camera_matrix": [
+      [
+        965.6842557388854,
+        0.0,
+        869.2256210552191
+      ],
+      [
+        0.0,
+        969.4232788254515,
+        508.9398862410896
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "distortion": [
+      0.10079108281161775,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "distortion_model": "opencv-brown",
+    "handeye": [
+      [
+        0.9967376103284078,
+        0.07577711587403531,
+        0.027784255732843655,
+        -0.0023780123088625055
+      ],
+      [
+        0.08030137921229079,
+        -0.8964711198919812,
+        -0.43576509692289583,
+        0.06729641340499926
+      ],
+      [
+        -0.008113239391198948,
+        0.4365745754271885,
+        -0.8996314886869796,
+        0.0008890949347987166
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "validated_components": [
+      "intrinsics",
+      "handeye",
+      "robot_geometry"
+    ],
+    "validation_id": "board-holdout-21632e45b4c339ec38466bf227a13965a26acb9343ce1a53013a36bcb9db60c0",
+    "validation_kind": "independent-heldout",
+    "validation_scope": {
+      "kind": "combined-camera-fk-sampled-workspace",
+      "joint_raw_bounds": {
+        "shoulder_pan": [
+          2435,
+          2456
+        ],
+        "shoulder_lift": [
+          937,
+          979
+        ],
+        "elbow_flex": [
+          3039,
+          3040
+        ],
+        "wrist_flex": [
+          2167,
+          2373
+        ],
+        "wrist_roll": [
+          569,
+          880
+        ]
+      },
+      "sampled_joint_poses": [
+        {
+          "shoulder_pan": 2435,
+          "shoulder_lift": 979,
+          "elbow_flex": 3040,
+          "wrist_flex": 2167,
+          "wrist_roll": 658
+        },
+        {
+          "shoulder_pan": 2435,
+          "shoulder_lift": 979,
+          "elbow_flex": 3040,
+          "wrist_flex": 2234,
+          "wrist_roll": 658
+        },
+        {
+          "shoulder_pan": 2435,
+          "shoulder_lift": 979,
+          "elbow_flex": 3040,
+          "wrist_flex": 2234,
+          "wrist_roll": 813
+        },
+        {
+          "shoulder_pan": 2435,
+          "shoulder_lift": 979,
+          "elbow_flex": 3040,
+          "wrist_flex": 2302,
+          "wrist_roll": 813
+        },
+        {
+          "shoulder_pan": 2435,
+          "shoulder_lift": 979,
+          "elbow_flex": 3040,
+          "wrist_flex": 2302,
+          "wrist_roll": 661
+        },
+        {
+          "shoulder_pan": 2435,
+          "shoulder_lift": 979,
+          "elbow_flex": 3040,
+          "wrist_flex": 2370,
+          "wrist_roll": 660
+        },
+        {
+          "shoulder_pan": 2435,
+          "shoulder_lift": 979,
+          "elbow_flex": 3040,
+          "wrist_flex": 2371,
+          "wrist_roll": 570
+        },
+        {
+          "shoulder_pan": 2435,
+          "shoulder_lift": 979,
+          "elbow_flex": 3040,
+          "wrist_flex": 2311,
+          "wrist_roll": 569
+        },
+        {
+          "shoulder_pan": 2435,
+          "shoulder_lift": 979,
+          "elbow_flex": 3040,
+          "wrist_flex": 2311,
+          "wrist_roll": 721
+        },
+        {
+          "shoulder_pan": 2435,
+          "shoulder_lift": 979,
+          "elbow_flex": 3040,
+          "wrist_flex": 2234,
+          "wrist_roll": 721
+        },
+        {
+          "shoulder_pan": 2435,
+          "shoulder_lift": 979,
+          "elbow_flex": 3040,
+          "wrist_flex": 2234,
+          "wrist_roll": 880
+        },
+        {
+          "shoulder_pan": 2435,
+          "shoulder_lift": 979,
+          "elbow_flex": 3040,
+          "wrist_flex": 2370,
+          "wrist_roll": 880
+        },
+        {
+          "shoulder_pan": 2456,
+          "shoulder_lift": 937,
+          "elbow_flex": 3039,
+          "wrist_flex": 2373,
+          "wrist_roll": 878
+        },
+        {
+          "shoulder_pan": 2437,
+          "shoulder_lift": 945,
+          "elbow_flex": 3039,
+          "wrist_flex": 2361,
+          "wrist_roll": 878
+        },
+        {
+          "shoulder_pan": 2437,
+          "shoulder_lift": 945,
+          "elbow_flex": 3039,
+          "wrist_flex": 2361,
+          "wrist_roll": 721
+        },
+        {
+          "shoulder_pan": 2437,
+          "shoulder_lift": 945,
+          "elbow_flex": 3039,
+          "wrist_flex": 2303,
+          "wrist_roll": 720
+        }
+      ],
+      "extrapolation_allowed": false,
+      "individually_identified_joint_zeros": false,
+      "jaw_contact_geometry_calibrated": false,
+      "interpretation": "Combined camera/FK verified on withheld board views, not global robot geometry; joint bounds alone do not prove all combinations.",
+      "board_print_scale": "declared square size; print at 100 percent and check a physical ruler",
+      "image_points_bbox_px": [
+        [
+          655.9859619140625,
+          67.88697052001953
+        ],
+        [
+          1339.219482421875,
+          762.3735961914062
+        ]
+      ],
+      "image_domain_validity": {
+        "valid": true,
+        "reason": "",
+        "normalized_radius": 1.2482924896434944,
+        "image_corner_radius": 1.2359331580628656,
+        "jacobian_eigenvalue_lower_bound": 1.0,
+        "boundary_radius_lower_bound": 1.444344447483616,
+        "inverse_roundtrip_max_px": 0.0894850596282839,
+        "inverse_roundtrip_limit_px": 0.25,
+        "interpretation": "Mathematical image-domain validity, not empirical calibration of unseen image regions."
+      },
+      "image_domain_interpretation": "Lens mapping is mathematically invertible over the image; empirical accuracy is only checked on sampled board views.",
+      "board_plane_base": [
+        [
+          -0.05636704364378786,
+          -0.997734654056874,
+          -0.03671942925577497,
+          0.43732347397036553
+        ],
+        [
+          -0.9983148058502948,
+          0.055815369353029554,
+          0.015880584500377125,
+          -0.17603553928533777
+        ],
+        [
+          -0.013795100976361203,
+          0.03755269148803424,
+          -0.9991994248152151,
+          -0.01223620425047394
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ]
+    },
+    "board_fingerprint": "c5510d7e18a1564520bb2e87ed98a507c966ef7155781b476ca53f28762f900e",
+    "board_session_id": "82bb3963cb744acd91c267d9171013cc",
+    "relative_translation_uncertainty_m": 0.0019580220886997336,
+    "base_position_uncertainty_m": 0.0019580220886997336,
+    "relative_rotation_uncertainty_deg": 0.25228822955474045,
+    "focal_relative_uncertainty": 0.0030839489600148194,
+    "uncertainty_interpretation": "Empirical heldout maxima within sampled workspace; focal uncertainty is training linearized standard deviation; not guaranteed error bounds or print-scale verification.",
+    "needs_more_views": false,
+    "metric_calibrated": true,
+    "camera_generation": null
+  },
+  "board_session_id": "82bb3963cb744acd91c267d9171013cc",
+  "board_spec": {
+    "columns": 9,
+    "rows": 6,
+    "square_size_m": 0.02,
+    "first_square": "black",
+    "coordinate_origin": "first-inner-corner"
+  },
+  "validation": {
+    "accepted_views": 16,
+    "independent_pose_groups": 16,
+    "observability": {
+      "rotation_span_deg": 29.74211780952236,
+      "rotation_singular_values_rad": [
+        1.8215562441037565,
+        1.1197048207641465,
+        0.11767067493903872
+      ],
+      "second_axis_ratio": 0.6146968145444581
+    },
+    "intrinsics_model_selection": {
+      "method": "training-only BIC among image-domain-admissible models",
+      "heldout_used_for_selection": false,
+      "training_view_count": 12,
+      "candidates": [
+        {
+          "model": "brown-k1-k2-tangential",
+          "free_intrinsic_parameters": 8,
+          "training_rms_px": 0.32504437786188306,
+          "training_bic": -3237.8286200207285,
+          "image_domain": {
+            "valid": false,
+            "reason": "Brown distortion folds within the required image domain",
+            "normalized_radius": 1.2496406384159608,
+            "image_corner_radius": 1.237267958827684,
+            "jacobian_eigenvalue_lower_bound": -0.5465786243855283,
+            "boundary_radius_lower_bound": 0.9800168345908391
+          },
+          "admissible": false
+        },
+        {
+          "model": "brown-k1-tangential",
+          "free_intrinsic_parameters": 7,
+          "training_rms_px": 0.3545035906138254,
+          "training_bic": -3020.122150709473,
+          "image_domain": {
+            "valid": true,
+            "reason": "",
+            "normalized_radius": 1.2444908968286297,
+            "image_corner_radius": 1.2321692047808215,
+            "jacobian_eigenvalue_lower_bound": 0.9800731878248917,
+            "boundary_radius_lower_bound": 1.4237829277553,
+            "inverse_roundtrip_max_px": 0.11414781767822509,
+            "inverse_roundtrip_limit_px": 0.25,
+            "interpretation": "Mathematical image-domain validity, not empirical calibration of unseen image regions."
+          },
+          "admissible": true
+        },
+        {
+          "model": "brown-k1",
+          "free_intrinsic_parameters": 5,
+          "training_rms_px": 0.35529638988267004,
+          "training_bic": -3028.6660415778406,
+          "image_domain": {
+            "valid": true,
+            "reason": "",
+            "normalized_radius": 1.2482924896434944,
+            "image_corner_radius": 1.2359331580628656,
+            "jacobian_eigenvalue_lower_bound": 1.0,
+            "boundary_radius_lower_bound": 1.444344447483616,
+            "inverse_roundtrip_max_px": 0.0894850596282839,
+            "inverse_roundtrip_limit_px": 0.25,
+            "interpretation": "Mathematical image-domain validity, not empirical calibration of unseen image regions."
+          },
+          "admissible": true
+        },
+        {
+          "model": "pinhole",
+          "free_intrinsic_parameters": 4,
+          "training_rms_px": 0.4774064692837848,
+          "training_bic": -2270.115007889437,
+          "image_domain": {
+            "valid": true,
+            "reason": "",
+            "normalized_radius": 1.328484804361725,
+            "image_corner_radius": 1.3153314894670545,
+            "jacobian_eigenvalue_lower_bound": 1.0,
+            "boundary_radius_lower_bound": 1.328484804361725,
+            "inverse_roundtrip_max_px": 1.1993471012430027e-13,
+            "inverse_roundtrip_limit_px": 0.25,
+            "interpretation": "Mathematical image-domain validity, not empirical calibration of unseen image regions."
+          },
+          "admissible": true
+        }
+      ],
+      "selected_model": "brown-k1",
+      "selected_image_domain": {
+        "valid": true,
+        "reason": "",
+        "normalized_radius": 1.2482924896434944,
+        "image_corner_radius": 1.2359331580628656,
+        "jacobian_eigenvalue_lower_bound": 1.0,
+        "boundary_radius_lower_bound": 1.444344447483616,
+        "inverse_roundtrip_max_px": 0.0894850596282839,
+        "inverse_roundtrip_limit_px": 0.25,
+        "interpretation": "Mathematical image-domain validity, not empirical calibration of unseen image regions."
+      }
+    },
+    "training_frame_ids": [
+      "327b291f98bd4c7280850d30b827fd55",
+      "2f24b6091bb54134a794db8093f47e17",
+      "cda8f985eab44316beb933bb60230ace",
+      "bb0fb3940b7242828b0e154830cb4730",
+      "ba33818c4ce44ecf96d67ca52918a045",
+      "2d2ebecf624643c4b2ef8c729c32a9e1",
+      "f767c58ea9ab40a084577bedd1a9d827",
+      "a1c09686ad60421f9af261ea3e0dd7d3",
+      "c50b612cecc540f596686318c4460a84",
+      "66eefac715a44fd3a294e2ed9ba2e8e7",
+      "796d282bfb5d489bb2bd237489af7767",
+      "84eab7a9d8e3491db03ca4df811d4f2a"
+    ],
+    "heldout_frame_ids": [
+      "fa435c77a81f44349ad2bccf41226fa0",
+      "4715bad6238e4c0ea9bb8b3fc2dd5613",
+      "b8fb23c1dc5b4d7ab0535dbf0ccb16d1",
+      "36108b7a3f5d41bdaa5206ea0fc2a484"
+    ],
+    "heldout_views": [
+      {
+        "frame_id": "fa435c77a81f44349ad2bccf41226fa0",
+        "reprojection_p95_px": 1.0829269067683756,
+        "board_translation_error_m": 0.0002779744710461014,
+        "board_rotation_error_deg": 0.08769355904180484
+      },
+      {
+        "frame_id": "4715bad6238e4c0ea9bb8b3fc2dd5613",
+        "reprojection_p95_px": 1.722734412143806,
+        "board_translation_error_m": 0.0005447029329963172,
+        "board_rotation_error_deg": 0.039847066835490545
+      },
+      {
+        "frame_id": "b8fb23c1dc5b4d7ab0535dbf0ccb16d1",
+        "reprojection_p95_px": 4.868249565272002,
+        "board_translation_error_m": 0.0019580220886997336,
+        "board_rotation_error_deg": 0.15856521166184748
+      },
+      {
+        "frame_id": "36108b7a3f5d41bdaa5206ea0fc2a484",
+        "reprojection_p95_px": 3.418599184638575,
+        "board_translation_error_m": 0.001375235724776819,
+        "board_rotation_error_deg": 0.25228822955474045
+      }
+    ],
+    "training_intrinsics_rms_px": 0.35529638988267004,
+    "training_chain_p95_px": 2.3084564569334445,
+    "heldout_max_translation_m": 0.0019580220886997336,
+    "heldout_max_rotation_deg": 0.25228822955474045,
+    "heldout_max_reprojection_p95_px": 4.868249565272002,
+    "empirical_bounds_only": true,
+    "heldout_data_used_for_fitting": false,
+    "acceptance_limits": {
+      "training_rms_px": 1.5,
+      "heldout_reprojection_px": 6.0,
+      "heldout_translation_m": 0.015,
+      "heldout_rotation_deg": 3.0
+    }
+  },
+  "blockers": [],
+  "detections": [
+    {
+      "frame_id": "327b291f98bd4c7280850d30b827fd55",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "2f24b6091bb54134a794db8093f47e17",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "cda8f985eab44316beb933bb60230ace",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "fa435c77a81f44349ad2bccf41226fa0",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "bb0fb3940b7242828b0e154830cb4730",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "ba33818c4ce44ecf96d67ca52918a045",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "2d2ebecf624643c4b2ef8c729c32a9e1",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "4715bad6238e4c0ea9bb8b3fc2dd5613",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "f767c58ea9ab40a084577bedd1a9d827",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "a1c09686ad60421f9af261ea3e0dd7d3",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "c50b612cecc540f596686318c4460a84",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "b8fb23c1dc5b4d7ab0535dbf0ccb16d1",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "66eefac715a44fd3a294e2ed9ba2e8e7",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "796d282bfb5d489bb2bd237489af7767",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "84eab7a9d8e3491db03ca4df811d4f2a",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    },
+    {
+      "frame_id": "36108b7a3f5d41bdaa5206ea0fc2a484",
+      "found": true,
+      "reason": "已看見完整棋盤。"
+    }
+  ],
+  "activation_performed": false
+}
