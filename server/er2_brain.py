@@ -86,12 +86,13 @@ def _extract_json(text: str) -> Any:
 class GeminiRoboticsER2Brain:
     """Embodied spatial reasoning via `gemini-robotics-er-2-preview` (`google-genai` SDK)."""
 
-    def __init__(self, model: str | None = None):
+    def __init__(self, model: str | None = None, default_thinking_level: str = 'low'):
         self.model = (
             model
             or os.environ.get('GEMINI_ROBOTICS_MODEL', '').strip()
             or DEFAULT_ER2_MODEL
         )
+        self.default_thinking_level = default_thinking_level if default_thinking_level in ('none', 'low', 'medium', 'high') else 'low'
         self._verified = False
         self._last_latency_ms: float | None = None
         self._last_error: str = ''
@@ -113,6 +114,7 @@ class GeminiRoboticsER2Brain:
     def status_dict(self) -> dict[str, Any]:
         return {
             'model': self.model,
+            'thinking_level': self.default_thinking_level,
             'sdk_installed': self.sdk_installed(),
             'api_key_configured': bool(self.api_key),
             'available': self.available(),
@@ -182,8 +184,9 @@ Rules for coordinates:
 
         try:
             client = self._client()
+            budget_map = {'none': 0, 'low': 256, 'medium': 1024, 'high': -1}
             thinking_cfg = types.ThinkingConfig(
-                thinking_budget=0 if thinking_level == 'none' else (-1 if thinking_level == 'high' else 256)
+                thinking_budget=budget_map.get(thinking_level, 256)
             )
             config = types.GenerateContentConfig(
                 temperature=temperature,

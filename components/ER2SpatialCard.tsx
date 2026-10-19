@@ -31,11 +31,16 @@ export interface ER2SpatialResult {
   frame?: { id: string; url: string; captured_at: number };
 }
 
+export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
+
 export function ER2SpatialCard({
   available,
   cameraConnected,
   busy,
   query,
+  thinkingLevel: controlledThinkingLevel,
+  onChangeThinkingLevel,
+  onOpenSettings,
   onRunER2,
   result,
   onPickObject,
@@ -44,11 +49,19 @@ export function ER2SpatialCard({
   cameraConnected: boolean;
   busy: boolean;
   query: string;
-  onRunER2: (thinkingLevel: 'none' | 'low' | 'high') => void;
+  thinkingLevel?: ThinkingLevel;
+  onChangeThinkingLevel?: (lvl: ThinkingLevel) => void;
+  onOpenSettings?: () => void;
+  onRunER2: (thinkingLevel: ThinkingLevel) => void;
   result: ER2SpatialResult | null;
   onPickObject?: (name: string) => void;
 }) {
-  const [thinkingLevel, setThinkingLevel] = useState<'none' | 'low' | 'high'>('low');
+  const [localThinkingLevel, setLocalThinkingLevel] = useState<ThinkingLevel>('low');
+  const thinkingLevel = controlledThinkingLevel ?? localThinkingLevel;
+  const handleSelectThinking = (lvl: ThinkingLevel) => {
+    setLocalThinkingLevel(lvl);
+    onChangeThinkingLevel?.(lvl);
+  };
 
   return (
     <section
@@ -63,12 +76,12 @@ export function ER2SpatialCard({
           <span>· gemini-robotics-er-2-preview (0–1000 座標 + 3D 桌面射線)</span>
         </div>
         <div className="arm-selector" role="group" aria-label="ER 2 思考深度">
-          {(['none', 'low', 'high'] as const).map((lvl) => (
+          {(['none', 'low', 'medium', 'high'] as const).map((lvl) => (
             <button
               key={lvl}
               type="button"
               className={thinkingLevel === lvl ? 'active' : ''}
-              onClick={() => setThinkingLevel(lvl)}
+              onClick={() => handleSelectThinking(lvl)}
             >
               Thinking: {lvl}
             </button>
@@ -83,14 +96,14 @@ export function ER2SpatialCard({
         <button
           type="button"
           className="er2-trigger-btn"
-          disabled={!available || !cameraConnected || busy}
+          disabled={!cameraConnected || busy}
           onClick={() => onRunER2(thinkingLevel)}
           title={
-            !available
-              ? '請先設定 GEMINI_API_KEY 以啟用 Gemini Robotics ER 2'
-              : !cameraConnected
-                ? '請先連接腕部相機'
-                : '執行 ER 2 空間點選與 3D 定位'
+            !cameraConnected
+              ? '請先連接腕部相機'
+              : available
+                ? '執行 ER 2 空間點選與 3D 定位'
+                : '執行本地視覺備援空間標定（設定 GEMINI_API_KEY 可啟用雲端 ER 2）'
           }
         >
           {busy ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}
@@ -99,9 +112,15 @@ export function ER2SpatialCard({
       </div>
 
       {!available && (
-        <p className="calibration-note" style={{ marginTop: 8 }}>
-          提示：在 <code>.env.local</code> 或環境變數設定 <code>GEMINI_API_KEY</code> 後，即可直接呼叫{' '}
-          <code>gemini-robotics-er-2-preview</code> 進行即時空間點選。
+        <p className="calibration-note" style={{ marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+          <span>
+            提示：目前尚未設定 <code>GEMINI_API_KEY</code>（搜尋與對話自動使用本機 <code>Astra / Codex</code> 備援；空間點選使用本地視覺備援）。設定 API Key 後即可直接呼叫 <code>gemini-robotics-er-2-preview</code>。
+          </span>
+          {onOpenSettings && (
+            <button type="button" className="motion-chip" onClick={onOpenSettings}>
+              設定 API Key / 切換引擎
+            </button>
+          )}
         </p>
       )}
 

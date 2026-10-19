@@ -163,18 +163,50 @@ class Brain:
         self.schema=self.directory/'scene.schema.json';self.schema.write_text(json.dumps(Scene.model_json_schema()))
         self.last_latency=None;self.last_error='';self.verified=False
         self.error_kind='';self.active=None;self.last_call=None
+        self.engine_override=None;self.thinking_level_override=None
     def _is_gemini(self)->bool:
+        if self.engine_override in ('astra','argon'):
+            return self.engine_override=='argon'
+        if self.config.get('brain_engine') in ('astra','argon'):
+            return self.config.get('brain_engine')=='argon'
         return str(self.config.get('model','')).startswith('gemini')
+
+    def _gemini_api_key(self)->str:
+        from .er2_brain import _read_gemini_api_key
+        return _read_gemini_api_key()
+
+    def thinking_level(self)->str:
+        lvl=str(self.thinking_level_override or self.config.get('thinking_level') or self.config.get('reasoning_effort','high')).lower().strip()
+        return lvl if lvl in ('none','low','medium','high') else 'low'
+
+    def engine(self)->str:
+        return 'argon' if self._is_gemini() else 'astra'
+
+    def active_model(self)->str:
+        cfg_model=str(self.config.get('model',''))
+        if self._is_gemini():
+            return cfg_model if cfg_model.startswith('gemini') else 'gemini-robotics-er-2-preview'
+        return 'gpt-6-astra' if cfg_model.startswith('gemini') else (cfg_model or 'gpt-6-astra')
 
     def status(self):
         current=self.active
         active=None if current is None else {**current,'elapsed':round(time.monotonic()-current['started_monotonic'],1)}
         if active:active.pop('started_monotonic',None)
+        has_key=bool(self._gemini_api_key())
+        has_codex=bool(shutil.which('codex'))
+        tl=self.thinking_level()
+        eff='low' if tl=='none' else tl
+        model_name=self.active_model()
         if self._is_gemini():
-            avail=bool(os.environ.get('GEMINI_API_KEY') or os.environ.get('GOOGLE_API_KEY'))
-            return {'model':self.config['model'],'transport':'google-genai','inference':'cloud','available':avail,'verified':self.verified,'latency':self.last_latency,'error':self.last_error,
+            avail=has_key or has_codex
+            transport='google-genai' if has_key else ('local-codex' if has_codex else 'google-genai')
+            return {'model':model_name,'engine':'argon','thinking_level':tl,'reasoning_effort':eff,
+                    'api_key_configured':has_key,'codex_available':has_codex,'transport':transport,'inference':'cloud',
+                    'available':avail,'verified':self.verified,'latency':self.last_latency,'error':self.last_error,
                     'error_kind':self.error_kind,'phase':active['phase'] if active else 'idle','active':active,'last_call':self.last_call}
-        return {'model':self.config['model'],'transport':'local-codex','inference':'cloud','available':bool(shutil.which('codex')),'verified':self.verified,'latency':self.last_latency,'error':self.last_error,
+        return {'model':model_name,'engine':'astra','thinking_level':tl,'reasoning_effort':eff,
+                'api_key_configured':has_key,'codex_available':has_codex,'transport':'local-codex','inference':'cloud',
+                'available':has_codex,'verified':self.verified,'latency':self.last_latency,'error':self.last_error,
                 'error_kind':self.error_kind,'phase':active['phase'] if active else 'idle','active':active,'last_call':self.last_call}
 
     def _record_call(self,record):
@@ -298,15 +330,17 @@ For unsupported external clearance or human assessment, set the corresponding fl
             except Exception:
                 pass
         started=time.monotonic()
+        tl=self.thinking_level()
+        model_name=self.active_model()
         record={'id':uuid.uuid4().hex,'started_at':time.time(),'schema':schema_model.__name__,
-                'model':self.config['model'],'reasoning_effort':self.config.get('reasoning_effort','low'),
+                'model':model_name,'reasoning_effort':tl,
                 'image_count':len(frames),'reference_present':bool(reference),
                 'first_event_seconds':None,'first_model_output_seconds':None,'network_events':0}
         active={'id':record['id'],'schema':schema_model.__name__,'phase':'reasoning','started_monotonic':started}
         self.active=active;self.error_kind='';self.last_error=''
         success=False;error_kind=''
         try:
-            api_key=(os.environ.get('GEMINI_API_KEY') or os.environ.get('GOOGLE_API_KEY') or '').strip()
+            api_key=self._gemini_api_key()
             if not api_key:
                 raise BrainTransportError('authentication')
             from google import genai
@@ -327,13 +361,15 @@ For unsupported external clearance or human assessment, set the corresponding fl
                 f"{schema_json}"
             )
             client=genai.Client(api_key=api_key)
+            budget_map={'none':0,'low':256,'medium':1024,'high':-1}
+            thinking_cfg=types.ThinkingConfig(thinking_budget=budget_map.get(tl,256))
             resp=client.models.generate_content(
-                model=self.config['model'],
+                model=model_name,
                 contents=[*images,full_prompt],
                 config=types.GenerateContentConfig(
                     temperature=0.2,
                     response_mime_type='application/json',
-                    thinking_config=types.ThinkingConfig(thinking_level='low'),
+                    thinking_config=thinking_cfg,
                 ),
             )
             if cancel is not None and cancel.is_set():
@@ -381,13 +417,33 @@ For unsupported external clearance or human assessment, set the corresponding fl
 
     def _invoke(self,prompt,frames,schema_model,*,reference=None,cancel=None):
         if cancel is not None and cancel.is_set():raise RuntimeError('搜尋已停止')
-        if self._is_gemini():
+        if self._is_gemini() and schema_model.__name__=='SearchIntent' and 'INPUT_DATA_JSON\n' in prompt:
+            try:
+                from .motiongpt_arm import is_natural_motion_query
+                payload=json.loads(prompt.split('INPUT_DATA_JSON\n',1)[1])
+                q=str(payload.get('query','')).strip()
+                if is_natural_motion_query(q):
+                    self.last_latency=0.0;self.verified=True;self.last_error=''
+                    return schema_model.model_validate({
+                        'intent':'action',
+                        'title':f'單手自然動作：{q[:32]}',
+                        'summary':'將人類單手 3D 骨架軌跡重映射至 SO-101 執行。',
+                        'label':q[:80],
+                        'availability':'experimental',
+                        'reason':'',
+                    })
+            except Exception:
+                pass
+        if self._is_gemini() and (self._gemini_api_key() or not shutil.which('codex')):
             return self._invoke_gemini(prompt,frames,schema_model,reference=reference,cancel=cancel)
+        codex_model='gpt-6-astra' if str(self.config.get('model','')).startswith('gemini') else self.config['model']
+        tl=self.thinking_level()
+        codex_effort='low' if tl=='none' else tl
         schema=self.directory/(schema_model.__name__.lower()+'.schema.json')
         schema.write_text(json.dumps(schema_model.model_json_schema()))
-        args=[shutil.which('codex') or 'codex','-a','never','exec','--ignore-user-config','--ephemeral','--skip-git-repo-check','-C',str(self.directory),'--model',self.config['model'],'--sandbox','read-only']
+        args=[shutil.which('codex') or 'codex','-a','never','exec','--ignore-user-config','--ephemeral','--skip-git-repo-check','-C',str(self.directory),'--model',codex_model,'--sandbox','read-only']
         for tool in ['shell_tool','apps','plugins','computer_use','browser_use','multi_agent','hooks']:args+=['--disable',tool]
-        args+=['-c','web_search="disabled"','-c',f'model_reasoning_effort="{self.config["reasoning_effort"]}"','--output-schema',str(schema),'--json']
+        args+=['-c','web_search="disabled"','-c',f'model_reasoning_effort="{codex_effort}"','--output-schema',str(schema),'--json']
         for f in frames:args+=['--image',f['path']]
         if reference:args+=['--image',str(reference)]
         args+=['-']
@@ -395,7 +451,7 @@ For unsupported external clearance or human assessment, set the corresponding fl
         timeout=_bounded_seconds(self.config,'inference_timeout_seconds',150,300)
         network_budget=_bounded_seconds(self.config,'connection_failure_timeout_seconds',15,30)
         record={'id':uuid.uuid4().hex,'started_at':time.time(),'schema':schema_model.__name__,
-                'model':self.config['model'],'reasoning_effort':self.config['reasoning_effort'],
+                'model':codex_model,'reasoning_effort':codex_effort,
                 'image_count':len(frames),'reference_present':bool(reference),
                 'first_event_seconds':None,'first_model_output_seconds':None,'network_events':0,
                 'timeout_seconds':timeout,'connection_failure_timeout_seconds':network_budget}

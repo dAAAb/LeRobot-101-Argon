@@ -20,11 +20,21 @@ from .motiongpt_arm import MOTION_PRESETS, plan_single_arm_motion, execute_retar
 ROOT=Path(__file__).resolve().parents[1];RUNTIME=ROOT/'.runtime';RUNTIME.mkdir(exist_ok=True)
 load_provider_credentials(ROOT)
 tactician=JevPolicy()
-er2_brain=GeminiRoboticsER2Brain()
 CONFIG=json.loads((ROOT/'config/robot.json').read_text())
+er2_brain=GeminiRoboticsER2Brain(default_thinking_level=CONFIG.get('thinking_level') or CONFIG.get('reasoning_effort','low'))
 camera=WristCamera(CONFIG,RUNTIME/'frames')
 robot=Robot(CONFIG,json.loads((ROOT/'config/follower-calibration.json').read_text()),RUNTIME,camera)
 brain=Brain(CONFIG,RUNTIME)
+try:
+    if (RUNTIME/'brain-config.json').is_file():
+        _saved_brain=json.loads((RUNTIME/'brain-config.json').read_text())
+        if _saved_brain.get('engine') in ('astra','argon'):
+            brain.engine_override=_saved_brain['engine']
+        if _saved_brain.get('thinking_level') in ('none','low','medium','high'):
+            brain.thinking_level_override=_saved_brain['thinking_level']
+            er2_brain.default_thinking_level=_saved_brain['thinking_level']
+except Exception:
+    pass
 spatial=SpatialEstimator(ROOT)
 from .kinematic_offsets import runtime_offsets,OffsetKinematics
 if runtime_offsets(ROOT):spatial.fk=OffsetKinematics(ROOT/'assets/so101_follower_cam.urdf',runtime_offsets(ROOT))
@@ -1325,7 +1335,48 @@ class ER2SpatialRequest(BaseModel):
     model_config=ConfigDict(extra='forbid')
     query:str=Field(default='',max_length=300)
     frame_id:str|None=None
-    thinking_level:Literal['none','low','high']='low'
+    thinking_level:Literal['none','low','medium','high']|None=None
+
+class BrainConfigRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    engine:Literal['astra','argon']|None=None
+    thinking_level:Literal['none','low','medium','high']|None=None
+    gemini_api_key:str|None=Field(default=None,max_length=500)
+
+def _update_env_local_gemini_key(api_key:str)->None:
+    env_path=ROOT/'.env.local'
+    lines=[]
+    if env_path.is_file():
+        lines=[ln for ln in env_path.read_text().splitlines() if not ln.strip().startswith('GEMINI_API_KEY=')]
+    if api_key:
+        lines.append(f'GEMINI_API_KEY={api_key}')
+        os.environ['GEMINI_API_KEY']=api_key
+    else:
+        os.environ.pop('GEMINI_API_KEY',None)
+    env_path.write_text('\n'.join(lines)+('\n' if lines else ''))
+
+@app.get('/api/brain/config')
+def get_brain_config():
+    return {'brain':brain.status(),'er2':er2_brain.status_dict()}
+
+@app.post('/api/brain/config')
+def update_brain_config(req:BrainConfigRequest):
+    if req.gemini_api_key is not None:
+        _update_env_local_gemini_key(req.gemini_api_key.strip())
+    if req.engine is not None:
+        brain.engine_override=req.engine
+    if req.thinking_level is not None:
+        brain.thinking_level_override=req.thinking_level
+        er2_brain.default_thinking_level=req.thinking_level
+    try:
+        (RUNTIME/'brain-config.json').write_text(json.dumps({
+            'engine':brain.engine(),
+            'thinking_level':brain.thinking_level(),
+        },ensure_ascii=False,indent=2)+'\n')
+    except OSError:
+        pass
+    brain.last_error='';brain.error_kind=''
+    return {'brain':brain.status(),'er2':er2_brain.status_dict()}
 
 @app.get('/api/motiongpt/presets')
 def motiongpt_presets():
@@ -1362,8 +1413,6 @@ def motiongpt_execute(req:MotionGPTPlanRequest):
 @app.post('/api/er2/spatial')
 def er2_spatial(req:ER2SpatialRequest):
     """Run Gemini Robotics ER 2 (`gemini-robotics-er-2-preview`) 0-1000 pointing, boxes, and 3D table projection."""
-    if not er2_brain.available():
-        raise HTTPException(503,'尚未設定 GEMINI_API_KEY 或安裝 google-genai，請在環境變數或 .env.local 設定 GEMINI_API_KEY')
     if req.frame_id:
         with frame_lock:
             f=frames.get(req.frame_id)
@@ -1385,7 +1434,8 @@ def er2_spatial(req:ER2SpatialRequest):
                 else:
                     raise HTTPException(503,str(exc)) from exc
     try:
-        result=er2_brain.detect_spatial_targets(f['path'],req.query,thinking_level=req.thinking_level)
+        effective_tl=req.thinking_level or brain.thinking_level()
+        result=er2_brain.detect_spatial_targets(f['path'],req.query,thinking_level=effective_tl)
         # If calibrated 3D table-ray model and measured joints are available, enrich with metric 3D coordinates
         joints=f.get('joints')
         if not joints:

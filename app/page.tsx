@@ -38,6 +38,7 @@ import {
 import {
   ER2SpatialCard,
   type ER2SpatialResult,
+  type ThinkingLevel,
 } from '@/components/ER2SpatialCard';
 type Frame = { id: string; url: string; captured_at: number; source?: string };
 type GraspResult = {
@@ -173,6 +174,12 @@ type Status = {
   };
   brain: {
     model: string;
+    engine?: 'astra' | 'argon';
+    thinking_level?: ThinkingLevel;
+    reasoning_effort?: string;
+    api_key_configured?: boolean;
+    codex_available?: boolean;
+    transport?: string;
     available: boolean;
     verified: boolean;
     latency: number | null;
@@ -187,6 +194,7 @@ type Status = {
   };
   er2?: {
     model: string;
+    thinking_level?: ThinkingLevel;
     sdk_installed: boolean;
     api_key_configured: boolean;
     available: boolean;
@@ -1775,10 +1783,50 @@ export default function Home() {
   const [preferredArm, setPreferredArm] = useState<'auto' | 'right' | 'left'>('auto');
   const [er2Result, setEr2Result] = useState<ER2SpatialResult | null>(null);
   const [er2Busy, setEr2Busy] = useState(false);
+  const [geminiKeyInput, setGeminiKeyInput] = useState('');
+  const [brainConfigSaving, setBrainConfigSaving] = useState(false);
+  const [brainConfigSavedNote, setBrainConfigSavedNote] = useState('');
   const lastSyncedMotionJobId = useRef('');
   const lastSyncedMotionReceiptJobId = useRef('');
   const lastSyncedSuggestionJobId = useRef('');
   const dismissedSuggestionJobId = useRef('');
+
+  const activeEngine: 'astra' | 'argon' =
+    status?.brain?.engine ||
+    (status?.brain?.model?.startsWith('gemini') ? 'argon' : 'astra');
+  const activeThinkingLevel: ThinkingLevel =
+    (status?.brain?.thinking_level as ThinkingLevel | undefined) || 'low';
+
+  async function updateBrainConfig(payload: {
+    engine?: 'astra' | 'argon';
+    thinking_level?: ThinkingLevel;
+    gemini_api_key?: string;
+  }) {
+    setBrainConfigSaving(true);
+    setBrainConfigSavedNote('');
+    setError('');
+    try {
+      const res = await request<{
+        brain: Status['brain'];
+        er2: Status['er2'];
+      }>('/api/brain/config', payload);
+      setStatus((prev) =>
+        prev ? { ...prev, brain: res.brain, er2: res.er2 } : prev,
+      );
+      if (payload.gemini_api_key !== undefined) {
+        setGeminiKeyInput('');
+        setBrainConfigSavedNote(
+          payload.gemini_api_key.trim()
+            ? '已儲存 GEMINI_API_KEY 至 .env.local 並立即生效'
+            : '已清除 GEMINI_API_KEY（自動切換為 Astra / Codex 備援）',
+        );
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBrainConfigSaving(false);
+    }
+  }
 
   const previewMotion = useCallback(
     async (queryValue: string, armChoice: 'auto' | 'right' | 'left' = preferredArm) => {
@@ -1838,7 +1886,7 @@ export default function Home() {
     }
   }
 
-  async function runER2Spatial(thinkingLevel: 'none' | 'low' | 'high') {
+  async function runER2Spatial(thinkingLevel: ThinkingLevel) {
     if (busy || er2Busy) return;
     setEr2Busy(true);
     setError('');
@@ -2127,6 +2175,20 @@ export default function Home() {
             )}
             揮揮手
           </button>
+          <button
+            className="connection"
+            style={{ whiteSpace: 'nowrap', color: '#5f6368' }}
+            title="點擊切換 Argon (Gemini ER 2) / Astra (Codex) 推論引擎與 Thinking Level"
+            onClick={() => setSettings(true)}
+          >
+            <Sparkles size={15} />
+            {activeEngine === 'argon'
+              ? status?.brain?.api_key_configured
+                ? 'Argon ER 2'
+                : 'Argon (Astra 備援)'
+              : 'Astra'}{' '}
+            · Thinking: {activeThinkingLevel}
+          </button>
           <button className="connection" onClick={() => setSettings(true)}>
             <i
               className={
@@ -2150,7 +2212,7 @@ export default function Home() {
             aria-label="連線資訊"
             onClick={() => setSettings(true)}
           >
-            Ar
+            {activeEngine === 'argon' ? 'Ar' : 'As'}
           </button>
         </div>
       </header>
@@ -2169,7 +2231,7 @@ export default function Home() {
         <main className="home">
           <div className="brand">
             <Logo />
-            <span className="astra">Argon</span>
+            <span className="astra">{activeEngine === 'argon' ? 'Argon' : 'Astra'}</span>
           </div>
           {searchBar}
           <div className="searchbuttons" style={{ flexWrap: 'wrap' }}>
@@ -2182,7 +2244,42 @@ export default function Home() {
               好手氣
             </button>
           </div>
-          <div className="home-motion-strip" aria-label="單手自然動作快速選擇">
+          <div className="home-motion-strip" aria-label="單手自然動作與推論引擎快速選擇">
+            <div className="home-motion-label" style={{ marginBottom: 8, flexWrap: 'wrap', gap: 10 }}>
+              <span>視覺推論引擎：</span>
+              <div className="arm-selector" role="group" aria-label="視覺推論引擎選擇">
+                <button
+                  type="button"
+                  className={activeEngine === 'argon' ? 'active' : ''}
+                  disabled={brainConfigSaving}
+                  onClick={() => void updateBrainConfig({ engine: 'argon' })}
+                >
+                  Argon (Gemini ER 2)
+                </button>
+                <button
+                  type="button"
+                  className={activeEngine === 'astra' ? 'active' : ''}
+                  disabled={brainConfigSaving}
+                  onClick={() => void updateBrainConfig({ engine: 'astra' })}
+                >
+                  Astra (Codex)
+                </button>
+              </div>
+              <span style={{ marginLeft: 4 }}>Thinking：</span>
+              <div className="arm-selector" role="group" aria-label="思考深度選擇">
+                {(['none', 'low', 'medium', 'high'] as const).map((lvl) => (
+                  <button
+                    key={lvl}
+                    type="button"
+                    className={activeThinkingLevel === lvl ? 'active' : ''}
+                    disabled={brainConfigSaving}
+                    onClick={() => void updateBrainConfig({ thinking_level: lvl })}
+                  >
+                    {lvl}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="home-motion-label">
               <span>人手單臂重映射 (AIRI MotionGPT → SO-101)：</span>
               <div className="arm-selector" role="group" aria-label="預設單手選擇">
@@ -2330,6 +2427,9 @@ export default function Home() {
                 cameraConnected={Boolean(status?.camera.connected)}
                 busy={busy || er2Busy}
                 query={q}
+                thinkingLevel={activeThinkingLevel}
+                onChangeThinkingLevel={(lvl) => void updateBrainConfig({ thinking_level: lvl })}
+                onOpenSettings={() => setSettings(true)}
                 onRunER2={(lvl) => void runER2Spatial(lvl)}
                 result={er2Result}
                 onPickObject={(name) => {
@@ -2685,9 +2785,50 @@ export default function Home() {
       </Dialog>
       <Dialog open={settings} onOpenChange={setSettings}>
         <DialogContent className="settings-dialog">
-          <DialogTitle>LeRobot Argon，準備好了嗎？</DialogTitle>
+          <DialogTitle>LeRobot {activeEngine === 'argon' ? 'Argon' : 'Astra'}，準備好了嗎？</DialogTitle>
           <DialogDescription>你的手臂、單手自然動作重映射與具身空間推理。</DialogDescription>
           <dl className="connection-list">
+            <div>
+              <dt>推論引擎</dt>
+              <dd>
+                <div className="arm-selector" role="group" aria-label="設定視窗推論引擎選擇">
+                  <button
+                    type="button"
+                    className={activeEngine === 'argon' ? 'active' : ''}
+                    disabled={brainConfigSaving}
+                    onClick={() => void updateBrainConfig({ engine: 'argon' })}
+                  >
+                    Argon (Gemini ER 2)
+                  </button>
+                  <button
+                    type="button"
+                    className={activeEngine === 'astra' ? 'active' : ''}
+                    disabled={brainConfigSaving}
+                    onClick={() => void updateBrainConfig({ engine: 'astra' })}
+                  >
+                    Astra (Codex)
+                  </button>
+                </div>
+              </dd>
+            </div>
+            <div>
+              <dt>Thinking Level</dt>
+              <dd>
+                <div className="arm-selector" role="group" aria-label="設定視窗思考深度選擇">
+                  {(['none', 'low', 'medium', 'high'] as const).map((lvl) => (
+                    <button
+                      key={lvl}
+                      type="button"
+                      className={activeThinkingLevel === lvl ? 'active' : ''}
+                      disabled={brainConfigSaving}
+                      onClick={() => void updateBrainConfig({ thinking_level: lvl })}
+                    >
+                      {lvl}
+                    </button>
+                  ))}
+                </div>
+              </dd>
+            </div>
             <div>
               <dt>腕部相機</dt>
               <dd>
@@ -2711,7 +2852,7 @@ export default function Home() {
               <dd>
                 {status?.er2?.available
                   ? `已就緒 (${status.er2.model})`
-                  : '待設定 GEMINI_API_KEY'}
+                  : '待設定 GEMINI_API_KEY（目前自動使用 Astra 備援）'}
               </dd>
             </div>
             <div>
@@ -2728,15 +2869,41 @@ export default function Home() {
               <dt>視覺推論後援</dt>
               <dd>
                 {status?.brain.verified
-                  ? '已實際完成視覺推論'
+                  ? `已實際完成視覺推論 (${status?.brain.transport || 'ready'})`
                   : status?.brain.available
-                    ? '可用，等待第一次搜尋'
+                    ? `可用 (${status?.brain.transport === 'google-genai' ? 'Gemini ER 2 API' : '本機 Codex / Astra'})`
                     : '等待本機控制器'}
               </dd>
             </div>
           </dl>
+          <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, background: '#f8f9fa', border: '1px solid #e8eaed' }}>
+            <label htmlFor="gemini-api-key-input" style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#3c4043', marginBottom: 6 }}>
+              Gemini API Key (<code>GEMINI_API_KEY</code> · 儲存至 <code>.env.local</code>)
+            </label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                id="gemini-api-key-input"
+                type="password"
+                placeholder={status?.brain?.api_key_configured ? '已設定 GEMINI_API_KEY（輸入新金鑰可覆寫）' : '貼上 AIza... 金鑰以啟用雲端 Gemini ER 2'}
+                value={geminiKeyInput}
+                onChange={(e) => setGeminiKeyInput(e.target.value)}
+                style={{ flex: 1, padding: '6px 10px', borderRadius: 8, border: '1px solid #dadce0', fontSize: 13 }}
+              />
+              <button
+                type="button"
+                className="motion-chip"
+                disabled={brainConfigSaving || !geminiKeyInput.trim()}
+                onClick={() => void updateBrainConfig({ gemini_api_key: geminiKeyInput.trim(), engine: 'argon' })}
+              >
+                儲存並啟用 Argon
+              </button>
+            </div>
+            {brainConfigSavedNote && (
+              <p style={{ margin: '6px 0 0', fontSize: 12, color: '#137333' }}>{brainConfigSavedNote}</p>
+            )}
+          </div>
           <p className="settings-note">
-            相機、三位置棋盤格運動學標定與 MotionGPT 單手動作重映射在本機執行；支援 Gemini Robotics ER 2 (<code>gemini-robotics-er-2-preview</code>) 與 Codex 雙引擎視覺推理。
+            相機、三位置棋盤格運動學標定與 MotionGPT 單手動作重映射在本機執行；支援 Gemini Robotics ER 2 (<code>gemini-robotics-er-2-preview</code>) 與 Astra (<code>gpt-6-astra</code>) 雙引擎切換與 Thinking Level (<code>none</code> / <code>low</code> / <code>medium</code> / <code>high</code>) 調整。
           </p>
           {status?.camera.error && (
             <p className="error">{status.camera.error}</p>

@@ -134,6 +134,26 @@ class ER2BrainAndAPITests(unittest.TestCase):
         self.assertEqual(plan_data['id'], 'right-wave')
         self.assertTrue(plan_data['table_clearance_passed'])
 
+        cfg_astra = client.post(
+            '/api/brain/config',
+            headers=headers,
+            json={'engine': 'astra', 'thinking_level': 'medium'},
+        )
+        self.assertEqual(cfg_astra.status_code, 200)
+        self.assertEqual(cfg_astra.json()['brain']['engine'], 'astra')
+        self.assertEqual(cfg_astra.json()['brain']['model'], 'gpt-6-astra')
+        self.assertEqual(cfg_astra.json()['brain']['thinking_level'], 'medium')
+
+        cfg_argon = client.post(
+            '/api/brain/config',
+            headers=headers,
+            json={'engine': 'argon', 'thinking_level': 'low'},
+        )
+        self.assertEqual(cfg_argon.status_code, 200)
+        self.assertEqual(cfg_argon.json()['brain']['engine'], 'argon')
+        self.assertEqual(cfg_argon.json()['brain']['model'], 'gemini-robotics-er-2-preview')
+        self.assertEqual(cfg_argon.json()['brain']['thinking_level'], 'low')
+
 
 if __name__ == '__main__':
     unittest.main()
