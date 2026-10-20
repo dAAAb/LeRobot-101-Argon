@@ -357,10 +357,15 @@ def run_search(req,j):
         observations=[f];point={'x':req.x,'y':req.y,'frame_index':0}
     elif req.mode=='inspect':observations=[snap(j)];point=None
     else:
-        report(j,'動動手腕，看看左右','scanning')
+        from .kinematic_grasp import parse_direction_hint
+        dir_hint=parse_direction_hint(req.query) if isinstance(brain,Brain) else None
+        report(j,'往左轉動手臂尋找目標' if dir_hint=='left' else ('往右轉動手臂尋找目標' if dir_hint=='right' else '動動手腕，看看左右'),'scanning')
         revision=robot.revision
         try:
-            observation_receipt=grasp.observe_views(lambda m:report(j,m,'scanning'),j['cancel'])
+            if dir_hint in ('left','right') and CONFIG.get('kinematic_model'):
+                observation_receipt=kinematic_grasp.directional_observe(dir_hint,lambda m:report(j,m,'scanning'),j['cancel'])
+            else:
+                observation_receipt=grasp.observe_views(lambda m:report(j,m,'scanning'),j['cancel'])
             observations=observation_receipt['frames']
         except Exception as exc:
             # A declined sweep before any motion still permits fresh visual
@@ -384,8 +389,9 @@ def run_search(req,j):
         # Single-axis roll improves coverage, but cannot identify all camera
         # extrinsics/focal length. Its CAD baseline is not calibrated depth.
         scene['observation']={k:observation_receipt[k] for k in ('measured_roll_range_deg','return_error_deg','camera_baseline_model_mm','not_external_metrology')}
-        scene['observation'].update(mode='wrist_roll_arc',view_count=len(all_observations),metric_calibrated=False)
-        scene['notice']='已從左右確認物件；抓取時會再核對夾爪位置。'
+        scene['observation'].update(mode='shoulder_pan_sweep' if observation_receipt.get('direction_hint') else 'wrist_roll_arc',
+                                    view_count=len(all_observations),metric_calibrated=False)
+        scene['notice']='已轉向目標方向確認物件；抓取時會自動對準畫面中央。' if observation_receipt.get('direction_hint') else '已從左右確認物件；抓取時會再核對夾爪位置。'
     elif observation_notice:scene['notice']=observation_notice
     scene['brain_elapsed']=brain_elapsed;scene['elapsed']=round(time.time()-j['created_at'],1)
     publish_scene(j,scene)
@@ -404,6 +410,18 @@ def run_search(req,j):
         obj=scene['objects'][scene['selected_index']];scene['query']=obj['name'];obj['matches_query']=True
         scene['notice_kind']='recognition_only'
         scene['notice']='已認出物件，尚未嘗試抓取。可選擇下方的「嘗試輕夾」。'
+        if isinstance(brain,Brain) and CONFIG.get('kinematic_model') and not robot.stop.is_set() and robot.pwm_owner is None:
+            b=obj.get('bbox') or {}
+            cx=float(b.get('x',0.5))+0.5*float(b.get('w',0.0))
+            by_bot=float(b.get('y',0.5))+float(b.get('h',0.0))
+            if not (0.35<=cx<=0.65) or by_bot>0.72:
+                try:
+                    centered=kinematic_grasp.face_bbox_in_frame(observations[0],b,lambda m:report(j,m,'moving'),j['cancel'])
+                    if centered is not None:
+                        scene['centered_frame_id']=centered['id']
+                        scene['notice']=f'已認出「{obj["name"]}」並轉動手臂面向它。可選擇下方的「試著抓起來」。'
+                except Exception:
+                    pass
     scene['robot_revision']=robot.revision;scene['completed_at']=time.time();scene['elapsed']=round(time.time()-j['created_at'],1)
     publish_scene(j,scene)
     report(j,'搜尋完成','done')
@@ -429,7 +447,9 @@ def recover_gripper_power():
     with job_lock:
         if getattr(robot,'maintenance_latched',False):raise HTTPException(409,'控制器正在準備重新啟動，暫時無法復原夾爪')
         if active and jobs[active]['status']=='running':raise HTTPException(409,'請先停止目前工作')
-        try:return robot.recover_gripper_power()
+        try:
+            res=grasp.complete_pending_open_release()
+            return res if res is not None else robot.recover_gripper_power()
         except RuntimeError as e:raise HTTPException(409,str(e))
 
 @app.post('/api/engineering/jaw-calibration/capture')
@@ -475,7 +495,7 @@ def observe_wide(req:SearchRequest):
         publish_scene(j,scene);report(j,'加寬觀察完成','done')
     return submit('wide-observation',run)
 @app.get('/api/status')
-def status():return {'robot':robot.status(),'camera':camera.status(),'brain':brain.status(),'er2':er2_brain.status_dict(),'motiongpt':{'available':True,'presets':list(MOTION_PRESETS.keys())},'tactics':tactician.status(),'job':public_job(jobs[active]) if active and active in jobs else None,'grasp':{'state':grasp.state,'low_power_owner':robot.pwm_owner is not None},'capabilities':{'search':True,'look':True,'wave':True,'command':True,'motiongpt':True,'er2':er2_brain.available(),'pick':bool(CONFIG.get('experimental_pick_enabled')),'place':bool(CONFIG.get('experimental_pick_enabled')),'stack':bool(CONFIG.get('experimental_pick_enabled')),'observer_in_production':False}}
+def status():return {'robot':robot.status(),'camera':camera.status(),'brain':brain.status(),'er2':er2_brain.status_dict(),'motiongpt':{'available':True,'presets':list(MOTION_PRESETS.keys())},'tactics':tactician.status(),'loop_engineer':loop_engineer.status(),'job':public_job(jobs[active]) if active and active in jobs else None,'grasp':{'state':grasp.state,'low_power_owner':robot.pwm_owner is not None},'capabilities':{'search':True,'look':True,'wave':True,'command':True,'motiongpt':True,'er2':er2_brain.available(),'pick':bool(CONFIG.get('experimental_pick_enabled')),'place':bool(CONFIG.get('experimental_pick_enabled')),'stack':bool(CONFIG.get('experimental_pick_enabled')),'observer_in_production':False}}
 @app.post('/api/observe-local')
 def observe_local(req:SearchRequest):
     def run(j):
@@ -508,6 +528,17 @@ from .kinematic_grasp import KinematicGraspProgram
 kinematic_grasp=KinematicGraspProgram(robot,brain,grasp,RUNTIME)
 grasp.tactician=tactician
 grasp.state_memory=world_memory
+from .loop_engineer import LoopEngineer
+def _loop_submit(job_fn):
+    return submit('grasp-attempt',lambda j:job_fn(j,lambda msg,st='moving':report(j,msg,st)),allow_stopped=True,initial_stage='planning',initial_message='Loop Engineer 正在啟動自動測試與優化…')
+def _loop_is_busy():
+    with job_lock:
+        return bool(active and active in jobs and jobs[active]['status']=='running')
+def _loop_cancel_active():
+    with job_lock:
+        if active and active in jobs and jobs[active]['status']=='running':
+            jobs[active]['cancel'].set()
+loop_engineer=LoopEngineer(ROOT,RUNTIME,robot,brain,kinematic_grasp,submit_job=_loop_submit,is_busy=_loop_is_busy,cancel_active=_loop_cancel_active)
 
 # Calibration uses the same single owner as robot jobs, but captures never
 # issue a motion command. D435/observer frames have no entry point here.
@@ -1003,6 +1034,50 @@ def command(req:CommandRequest):
                 j['command_result']=cmd_res
             report(j,f"已完成單手動作：{plan['title_zh']}",'done')
             return
+        from .kinematic_grasp import is_kinematic_grasp_command, extract_grasp_query_info
+        if (isinstance(brain,Brain) and CONFIG.get('grasp_backend')=='kinematic'
+                and CONFIG.get('kinematic_model') and is_kinematic_grasp_command(req.instruction)):
+            if not CONFIG.get('experimental_pick_enabled',False):
+                raise RuntimeError('實驗抓取目前未開啟')
+            info=extract_grasp_query_info(req.instruction)
+            dir_hint=info['direction_hint'] or _infer_scene_direction_hint(info['target_query'])
+            out=loop_engineer.execute_grasp_with_retry(
+                req.instruction,
+                lambda m:report(j,m,'moving'),
+                j['cancel'],
+                direction_hint=dir_hint,
+                return_object=info['return_object'],
+            )
+            planned=out['plan']
+            value=out['execution']
+            diag=out.get('diagnosis')
+            with job_lock:
+                j['engineering_result']=planned
+            if not planned['executable'] or value is None:
+                raise RuntimeError('抓取路徑有問題，未執行：'+'；'.join(planned['problems'])[:300])
+            obj_name=planned.get('object',{}).get('name') or info['target_query']
+            confirmed=bool(value.get('grasp_confirmed'))
+            attempts_cnt=len(out.get('attempts') or [1])
+            retry_note=f"（共嘗試 {attempts_cnt} 次）" if attempts_cnt>1 else ''
+            step_label=f"轉向對準並夾取「{obj_name}」" + ('再放回桌面' if info['return_object'] else '') + retry_note
+            diag_suffix=f" 診斷與參數優化：{diag['summary']}" if (not confirmed and diag and diag.get('summary')) else ''
+            summary_txt=(f"已主動轉動手臂面向「{obj_name}」確認環境與 3D 姿態並完成夾取" + ('與放回' if info['return_object'] else '') + f"{retry_note}。") if confirmed else f"已轉動手臂面向「{obj_name}」嘗試夾取{retry_note}，偵測到未夾起物件，已自動鬆開夾爪並安全退回原位。{diag_suffix}"
+            cmd_res={
+                'plan':{
+                    'status':'ready',
+                    'summary':summary_txt,
+                    'unsupported_reason':'',
+                    'steps':[{'skill':'pick','direction':dir_hint or 'none','distance_mm':0.0,'target':obj_name,'label':step_label}],
+                },
+                'completed':bool(value.get('completed',True)),
+                'status':'completed' if confirmed else 'stopped',
+                'steps':[{'index':0,'skill':'pick','label':step_label,'completed':confirmed,'status':'completed' if confirmed else 'stopped','receipt':value}],
+            }
+            with job_lock:
+                j['engineering_result']={**value,'task':'grasp','plan':planned,'diagnosis':diag,'attempts':out.get('attempts')}
+                j['command_result']=cmd_res
+            report(j,('已拿起物件並放回桌面'+retry_note) if confirmed else ('偵測到未夾起物件，已自動鬆開夾爪並退回原位' + (f"（{diag['summary']}）" if diag and diag.get('summary') else '')),'done')
+            return
         from .skill_plan import plan_skills
         from .skill_runtime import SkillRunner
         # An unavailable image can reject a new command before touching the
@@ -1053,18 +1128,118 @@ def grasp_open(req:EmptyGripperRequest):
         report(j,'夾爪已張開','done')
     return submit('grasp-open',run)
 
+def _match_object_query(q_norm:str, name:str) -> bool:
+    q = (q_norm or '').strip().lower()
+    n = (name or '').strip().lower()
+    if not q or not n:
+        return False
+    if q in n or n in q:
+        return True
+    synonym_groups = (
+        ('toothpick', '牙籤', '牙签', '透明小方盒', '透明方盒', '方盒'),
+        ('effervescent', 'vitamin', 'tablet', 'tube', '發泡錠', '发泡锭', '維他命', '圓筒', '白橘'),
+        ('corn', 'can', 'green giant', '玉米', '綠巨人', '罐頭'),
+    )
+    for grp in synonym_groups:
+        if any(tok in q for tok in grp) and any(tok in n for tok in grp):
+            return True
+    return False
+
+last_er2_spatial:dict|None=None
+
+def _infer_scene_direction_hint(query:str):
+    from .kinematic_grasp import parse_direction_hint, extract_grasp_query_info, HOME
+    hint=parse_direction_hint(query)
+    if hint:
+        return hint
+    target_q=extract_grasp_query_info(query).get('target_query') or query
+    q_norm=(target_q or '').strip()
+    # 1. Check latest ER 2 spatial detection if available
+    if isinstance(last_er2_spatial,dict):
+        er2_frame=last_er2_spatial.get('frame') or {}
+        fid=er2_frame.get('id')
+        with frame_lock:
+            full_f=frames.get(fid) if fid else None
+        f_joints=(full_f or er2_frame).get('joints') or {}
+        pan=float(f_joints.get('shoulder_pan',HOME['shoulder_pan']))
+        for it in (last_er2_spatial.get('items') or []):
+            if _match_object_query(q_norm,str(it.get('label',''))) or _match_object_query(q_norm,str(it.get('description',''))):
+                m3d=it.get('metric_3d') or {}
+                cm=m3d.get('center_m')
+                if isinstance(cm,list) and len(cm)>=2:
+                    if float(cm[1])>0.035:
+                        return 'left'
+                    if float(cm[1])<-0.035:
+                        return 'right'
+                pn=it.get('point_norm') or {}
+                cx=float(pn.get('x',0.5))
+                est_pan=pan+(cx-0.5)*520.0
+                if est_pan<HOME['shoulder_pan']-75:
+                    return 'left'
+                if est_pan>HOME['shoulder_pan']+75:
+                    return 'right'
+                return None
+    # 2. Check recent scenes (only when object name/description matches target_q; never fall back to unrelated selected_index)
+    with job_lock:
+        recent_scenes=list(scenes.values())[-4:]
+    for sc in reversed(recent_scenes):
+        objs=sc.get('objects') or []
+        frames_list=sc.get('frames') or []
+        matched=None
+        for o in objs:
+            if _match_object_query(q_norm,str(o.get('name',''))) or _match_object_query(q_norm,str(o.get('description',''))):
+                matched=o
+                break
+        if matched is not None:
+            fi=min(max(int(matched.get('frame_index',0)),0),max(0,len(frames_list)-1))
+            f_meta=frames_list[fi] if fi<len(frames_list) else {}
+            fid=f_meta.get('id') if isinstance(f_meta,dict) else None
+            with frame_lock:
+                full_f=frames.get(fid) if fid else None
+            f_joints=((full_f or {}).get('joints') or (f_meta.get('joints') if isinstance(f_meta,dict) else None)) or {}
+            pan=float(f_joints.get('shoulder_pan',HOME['shoulder_pan']))
+            b=matched.get('bbox') or {}
+            cx=float(b.get('x',0.5))+0.5*float(b.get('w',0.0))
+            est_pan=pan+(cx-0.5)*520.0
+            if est_pan<HOME['shoulder_pan']-75:
+                return 'left'
+            if est_pan>HOME['shoulder_pan']+75:
+                return 'right'
+            break
+    return None
+
 @app.post('/api/grasp-attempt')
 def grasp_attempt(req:SearchRequest):
     if not CONFIG.get('experimental_pick_enabled',False):raise HTTPException(409,'實驗抓取目前未開啟')
     if CONFIG.get('grasp_backend')=='kinematic':
         # Fitted kinematic model: home, look around, plan locally, then pick up, put back, release, retreat.
         def run(j):
-            planned=kinematic_grasp.plan(req.query,lambda m:report(j,m,'planning'),j['cancel'])
+            dir_hint=_infer_scene_direction_hint(req.query)
+            if isinstance(brain,Brain):
+                out=loop_engineer.execute_grasp_with_retry(
+                    req.query,
+                    lambda m:report(j,m,'moving'),
+                    j['cancel'],
+                    direction_hint=dir_hint,
+                    return_object=True,
+                )
+                planned=out['plan']
+                value=out['execution']
+                diag=out.get('diagnosis')
+                j['engineering_result']=planned
+                if not planned['executable'] or value is None:
+                    raise RuntimeError('抓取路徑有問題，未執行：'+'；'.join(planned['problems'])[:300])
+                j['engineering_result']={**value,'task':'grasp','plan':planned,'diagnosis':diag,'attempts':out.get('attempts')}
+                attempts_cnt=len(out.get('attempts') or [1])
+                retry_note=f"（共嘗試 {attempts_cnt} 次）" if attempts_cnt>1 else ''
+                report(j,('已拿起物件並放回桌面'+retry_note) if value.get('grasp_confirmed') else ('偵測到未夾起物件，已自動鬆開夾爪並退回原位' + (f"（{diag['summary']}）" if diag and diag.get('summary') else '')),'done')
+                return
+            planned=kinematic_grasp.plan(req.query,lambda m:report(j,m,'planning'),j['cancel'],direction_hint=dir_hint)
             j['engineering_result']=planned
             if not planned['executable']:raise RuntimeError('抓取路徑有問題，未執行：'+'；'.join(planned['problems'])[:300])
             value=kinematic_grasp.execute(planned['plan_id'],lambda m:report(j,m,'moving'),j['cancel'])
             j['engineering_result']={**value,'task':'grasp','plan':planned}
-            report(j,'已拿起物件並放回桌面' if value.get('grasp_confirmed') else '動作完成，但未確認拿起','done')
+            report(j,'已拿起物件並放回桌面' if value.get('grasp_confirmed') else '偵測到未夾起物件，已自動鬆開夾爪並退回原位','done')
         return submit('grasp-attempt',run)
     def run(j):
         execute_object_program(j,req.query)
@@ -1085,7 +1260,8 @@ def kinematic_grasp_plan(req:KinematicGraspRequest):
     """Observation motions only (home, look around, one closer view); returns a grasp plan for review."""
     if not CONFIG.get('kinematic_model'):raise HTTPException(409,'尚未設定運動學模型')
     def run(j):
-        j['engineering_result']=kinematic_grasp.plan(req.query,lambda m:report(j,m,'planning'),j['cancel'])
+        dir_hint=_infer_scene_direction_hint(req.query)
+        j['engineering_result']=kinematic_grasp.plan(req.query,lambda m:report(j,m,'planning'),j['cancel'],direction_hint=dir_hint)
         report(j,'抓取計畫完成，等待確認','done')
     return submit('grasp-attempt',run)
 
@@ -1095,7 +1271,7 @@ def kinematic_grasp_execute(req:KinematicGraspExecute):
     def run(j):
         value=kinematic_grasp.execute(req.plan_id,lambda m:report(j,m,'moving'),j['cancel'],return_object=req.return_object)
         j['engineering_result']=value
-        report(j,'已拿起物件並放回' if value.get('grasp_confirmed') else '動作完成，但未確認拿起','done')
+        report(j,'已拿起物件並放回' if value.get('grasp_confirmed') else '偵測到未夾起物件，已自動鬆開夾爪並退回原位','done')
     return submit('grasp-attempt',run)
 
 @app.post('/api/grasp-step')
@@ -1173,10 +1349,18 @@ def job(jid:str):
     return public_job(jobs[jid])
 @app.post('/api/stop')
 def stop():
+    if loop_engineer.loop_state.get('running'):
+        loop_engineer.stop_loop('已按緊急停止，自動停止 Loop Engineer')
     robot.stop.set()
-    if active and active in jobs:jobs[active]['cancel'].set()
+    with job_lock:
+        if active and active in jobs:
+            jobs[active]['cancel'].set()
+            if not robot.moving and jobs[active].get('status')=='running':
+                jobs[active]['status']='cancelled'
+                jobs[active]['message']='已停止'
     contact_error=None
     try:
+        grasp._sync_release_open_goal()
         if robot.pwm_owner is not None and robot.gripper_power.state in ('active','holding','releasing'):
             record=robot.gripper_power._record()
             if record and record.get('contact_possible'):robot.gripper_power.stop_contact(robot.pwm_owner)
@@ -1198,8 +1382,15 @@ def maintenance_quiesce():
 def resume():
     with job_lock:
         if getattr(robot,'maintenance_latched',False):raise HTTPException(409,'控制器正在準備重新啟動，請等重新啟動完成後再恢復')
-        if active and active in jobs and jobs[active]['status']=='running':raise HTTPException(409,'正在停止，請稍候')
-        try:robot.resume()
+        if active and active in jobs and jobs[active]['status']=='running':
+            if not robot.moving and (jobs[active]['cancel'].is_set() or robot.stop.is_set()):
+                jobs[active]['status']='cancelled'
+                jobs[active]['message']='已停止'
+            else:
+                raise HTTPException(409,'正在停止，請稍候')
+        try:
+            grasp.complete_pending_open_release()
+            robot.resume()
         except RuntimeError as e:raise HTTPException(409,str(e))
     return {'stopped':False}
 @app.post('/api/look')
@@ -1207,15 +1398,19 @@ def look():return submit('look',lambda j:(report(j,'抬起手腕看看你','movi
 @app.post('/api/robot/home')
 def robot_home():
     with job_lock:
-        if active and active in jobs and jobs[active]['status']=='running' and not robot.moving:
+        if active and active in jobs and jobs[active]['status']=='running':
             jobs[active]['cancel'].set()
-            jobs[active]['status']='cancelled'
-            jobs[active]['message']='已切換至歸回原位'
+            if not robot.moving:
+                jobs[active]['status']='cancelled'
+                jobs[active]['message']='已切換至歸回原位'
     def run(j):
+        grasp.complete_pending_open_release()
+        if robot.stop.is_set():
+            robot.resume()
         receipt=robot.go_home(report=lambda m:report(j,m,'moving'))
         j['engineering_result']=receipt
         report(j,'已歸回正前方預設原位 (shoulder_pan=2030)','done')
-    return submit('home',run,initial_stage='moving',initial_message='正在將手臂歸回正前方預設原位…')
+    return submit('home',run,allow_stopped=True,allow_holding=True,initial_stage='moving',initial_message='正在將手臂歸回正前方預設原位…')
 
 def run_inspection(query,j):
     report(j,'重新拍一張，看看物件的細節','observing')
@@ -1468,7 +1663,112 @@ def er2_spatial(req:ER2SpatialRequest):
             except Exception:
                 pass
         result['frame']={k:v for k,v in f.items() if k!='path'}
+        global last_er2_spatial
+        last_er2_spatial=result
         return result
     except Exception as exc:
         raise HTTPException(502,str(exc)) from exc
+
+
+class LoopEngineerConfigRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    auto_retry_enabled:bool|None=None
+    max_retries_per_grasp:int|None=Field(default=None,ge=0,le=3)
+    mode:Literal['custom','random']|None=None
+    custom_query:str|None=Field(default=None,max_length=500)
+    duration_hours:float|None=None
+    cooldown_seconds:float|None=Field(default=None,ge=1.0,le=60.0)
+
+
+class LoopEngineerStartRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    mode:Literal['custom','random']='custom'
+    custom_query:str=Field(default='往左找到 toothpick container，把它拿起來再放回去',max_length=500)
+    duration_hours:float|None=1.0
+
+
+class LoopEngineerRetryRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    query:str|None=Field(default=None,max_length=500)
+    diagnose_first:bool=True
+
+
+class LoopEngineerResetRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    query:str|None=Field(default=None,max_length=500)
+
+
+@app.get('/api/loop-engineer/status')
+def loop_engineer_status():
+    return loop_engineer.status()
+
+
+@app.post('/api/loop-engineer/config')
+def loop_engineer_config(req:LoopEngineerConfigRequest):
+    loop_engineer.update_config(req.model_dump(exclude_unset=True))
+    return loop_engineer.status()
+
+
+@app.post('/api/loop-engineer/start')
+def loop_engineer_start(req:LoopEngineerStartRequest):
+    if not CONFIG.get('experimental_pick_enabled',False):
+        raise HTTPException(409,'實驗抓取目前未開啟')
+    return loop_engineer.start_loop(
+        mode=req.mode,
+        custom_query=req.custom_query,
+        duration_hours=req.duration_hours,
+    )
+
+
+@app.post('/api/loop-engineer/stop')
+def loop_engineer_stop():
+    return loop_engineer.stop_loop('使用者手動停止 Loop Engineer')
+
+
+@app.post('/api/loop-engineer/retry')
+def loop_engineer_retry(req:LoopEngineerRetryRequest):
+    if not CONFIG.get('experimental_pick_enabled',False):
+        raise HTTPException(409,'實驗抓取目前未開啟')
+    last=loop_engineer.last_attempt or {}
+    q=(req.query or last.get('query') or '').strip()
+    if not q:
+        raise HTTPException(422,'請提供要重試的動作或物件名稱')
+    def run(j):
+        if robot.stop.is_set():
+            grasp.complete_pending_open_release()
+            robot.resume()
+        if req.diagnose_first and last and not last.get('success') and not last.get('diagnosis'):
+            report(j,'🧠 正在根據前次 Action Log 與 D435 畫面分析失敗原因…','planning')
+            loop_engineer.diagnose_attempt(
+                query=q,
+                plan_summary=last.get('plan'),
+                exec_result=last.get('execution'),
+                cancel=j['cancel'],
+            )
+        dir_hint=_infer_scene_direction_hint(q)
+        out=loop_engineer.execute_grasp_with_retry(
+            q,
+            lambda m:report(j,m,'moving'),
+            j['cancel'],
+            direction_hint=dir_hint,
+            return_object=bool(last.get('return_object',True)),
+            auto_retry=True,
+            max_retries=max(1,int(loop_engineer.config.get('max_retries_per_grasp',1))),
+        )
+        planned=out['plan']
+        value=out['execution']
+        diag=out.get('diagnosis')
+        j['engineering_result']=planned
+        if not planned['executable'] or value is None:
+            raise RuntimeError('重試規劃仍有問題：'+'；'.join(planned['problems'])[:300])
+        j['engineering_result']={**value,'task':'grasp','plan':planned,'diagnosis':diag,'attempts':out.get('attempts')}
+        report(j,'重試成功：已拿起物件並放回桌面' if value.get('grasp_confirmed') else '重試後仍未夾起物件，已自動鬆開並退回原位','done')
+    return submit('grasp-attempt',run,allow_stopped=True,initial_stage='planning',initial_message=f'正在重新檢測環境並重試「{q}」…')
+
+
+@app.post('/api/loop-engineer/reset-tuning')
+def loop_engineer_reset_tuning(req:LoopEngineerResetRequest):
+    kinematic_grasp.reset_tuning(req.query)
+    return loop_engineer.status()
+
 
