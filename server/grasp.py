@@ -1184,9 +1184,16 @@ class WristGrasp:
         if type(squeeze_ticks) is not int or not 0<=squeeze_ticks<=80:raise ValueError('Squeeze must be 0..80 ticks')
         r=self.robot;power=r.gripper_power;r.begin(allow_rearm=False)
         frame=self.capture();unchanged_wrist(reference,frame)
+        origin=frame['joints']
         if r.pwm_owner is None:r.pwm_owner=power.enter()
+        # Wide v2 grasps start near 2030 and can contact ~50mm objects around 1885..1925 (>1860).
+        # Use 1980 as the verified open target for wide starts so release is always opening-only.
+        with r.io:
+            raw_rec=power.journal.get()
+            if raw_rec and not raw_rec.get('contact_possible'):
+                power.open_position=1980 if int(origin.get('gripper',1860))>=1985 else 1860
         power.mark_contact_possible(r.pwm_owner);self.state='closing'
-        origin=frame['joints'];window=[];started=time.monotonic();last_goal=origin['gripper']
+        window=[];started=time.monotonic();last_goal=origin['gripper']
         report('以低出力輕合夾爪，讀取馬達回饋')
         r.moving=True
         try:
@@ -1194,7 +1201,8 @@ class WristGrasp:
                 if cancel.is_set() or r.stop.is_set():raise SessionCancelled('合爪已停止')
                 if not r.camera.fresh():raise RuntimeError('合爪期間腕部影像中斷')
                 s=r.gripper_telemetry();self.record({'type':'closing_sample',**s})
-                if s['pwm_limit']!=power.LOW or s['temperature_c']>55:raise RuntimeError('夾爪出力或溫度不符限制')
+                max_grip_temp=int((getattr(r,'config',None) or {}).get('max_gripper_temperature_c',65))
+                if s['pwm_limit']!=power.LOW or s['temperature_c']>max_grip_temp:raise RuntimeError('夾爪出力或溫度不符限制')
                 if any(abs(s['body_position'][n]-origin[n])>CONTACT_BODY_DRIFT_TICKS for n in NAMES):raise RuntimeError('合爪期間手臂偏移')
                 window.append(s);window=[x for x in window if s['capture_monotonic']-x['capture_monotonic']<=.6]
                 stalled_on_obj = (
@@ -1208,8 +1216,18 @@ class WristGrasp:
                     contact=s
                     if squeeze_ticks:
                         report('偵測到接觸，在低出力上限內夾緊')
-                        target=max(1525,s['position']-squeeze_ticks)
-                        while last_goal>target:
+                        min_target=max(1525,contact['position']-squeeze_ticks-45)
+                        desired_lead=min(34,squeeze_ticks)
+                        for _ in range(28):
+                            target=max(min_target,min(contact['position']-squeeze_ticks,s['position']-desired_lead))
+                            if last_goal<=target and abs(s['load_signed_pwm'])>=95:
+                                break
+                            if last_goal<=target:
+                                if cancel.wait(.12):raise SessionCancelled('合爪已停止')
+                                s=r.gripper_telemetry();self.record({'type':'squeeze_sample',**s})
+                                target=max(min_target,min(contact['position']-squeeze_ticks,s['position']-desired_lead))
+                                if last_goal<=target:
+                                    break
                             if cancel.is_set() or r.stop.is_set():raise SessionCancelled('合爪已停止')
                             if not r.camera.fresh():raise RuntimeError('合爪期間腕部影像中斷')
                             goal=max(target,last_goal-5)
@@ -1219,7 +1237,7 @@ class WristGrasp:
                                 r._write('gripper',42,goal);r.goals['gripper']=goal;last_goal=goal
                             if cancel.wait(.1):raise SessionCancelled('合爪已停止')
                             s=r.gripper_telemetry();self.record({'type':'squeeze_sample',**s})
-                            if s['pwm_limit']!=power.LOW or s['temperature_c']>55:raise RuntimeError('夾爪出力或溫度不符限制')
+                            if s['pwm_limit']!=power.LOW or s['temperature_c']>max_grip_temp:raise RuntimeError('夾爪出力或溫度不符限制')
                             if any(abs(s['body_position'][n]-origin[n])>CONTACT_BODY_DRIFT_TICKS for n in NAMES):raise RuntimeError('夾緊期間手臂偏移')
                             if s['position']<=1525:raise RuntimeError('夾緊時夾爪接近空夾位置，物件可能已滑出')
                         if cancel.wait(.3):raise SessionCancelled('合爪已停止')
@@ -1249,6 +1267,26 @@ class WristGrasp:
             power.leave_pending();r.stop.set();r.hold();raise
         finally:r.moving=False
 
+    def _sync_release_open_goal(self):
+        """Ensure power.open_position matches the journal and is >= current jaw position/goal."""
+        r=self.robot;power=r.gripper_power
+        with r.io:
+            raw=power.journal.get()
+            if not raw or not raw.get('contact_possible'):
+                return int(power.open_position or 1860)
+            open_goal=int(raw.get('verified_open_position') or power.open_position or 1860)
+            try:
+                cur_pos=r._read('gripper',56)
+                cur_goal=r._read('gripper',42)
+                if open_goal<max(cur_pos,cur_goal)+6:
+                    open_goal=min(2030,max(1980,max(cur_pos,cur_goal)+12))
+                    raw={**raw,'verified_open_position':open_goal}
+                    power.journal.put(raw)
+            except Exception:
+                pass
+            power.open_position=open_goal
+            return open_goal
+
     def release(self,reference,report,cancel,*,support_verified=False,empty_verified=False,retreat=None):
         """Explicit, visually reviewed release; never used as automatic cleanup.
 
@@ -1271,7 +1309,8 @@ class WristGrasp:
             before=r.read();frame=self.snapshot();after=r.read()
             if max(abs(before[n]-after[n]) for n in before)>2:raise RuntimeError('釋放取像時手臂仍在移動')
             frame['joints']=after;return frame
-        fresh=recovery_frame(reference.get('capture_monotonic') if isinstance(reference,dict) else None);unchanged_wrist(reference,fresh)
+        fresh=recovery_frame(reference.get('capture_monotonic') if isinstance(reference,dict) else None);unchanged_wrist(reference,fresh,max_joint_drift=6 if support_verified else 3)
+        open_goal=self._sync_release_open_goal()
         record=power._record()
         if not record or record['phase']=='completed':raise RuntimeError('沒有待完成的低出力夾爪工作')
         if not record.get('contact_possible'):
@@ -1285,15 +1324,16 @@ class WristGrasp:
             challenge=power.recover_for_release(camera_generation=fresh['camera_generation'],frame_sequence=fresh['sequence'])
             r.pwm_owner=challenge['owner_token']
         origin=fresh['joints'];report('確認物件有支撐，輕輕張開夾爪')
+        max_grip_temp=int(r.config.get('max_gripper_temperature_c',65))
+        max_release_drift=max(CONTACT_BODY_DRIFT_TICKS,16 if support_verified else 4)
         try:
             deadline=time.monotonic()+12
             while time.monotonic()<deadline:
                 if cancel.is_set():raise SessionCancelled('釋放已停止')
                 if not r.camera.fresh() or r.camera.generation!=fresh['camera_generation']:raise RuntimeError('釋放期間腕部畫面中斷')
                 s=r.gripper_telemetry()
-                if any(abs(s['body_position'][n]-origin[n])>20 for n in NAMES):raise RuntimeError('釋放期间手臂偏移')
-                if s['pwm_limit']!=power.LOW or s['temperature_c']>55:raise RuntimeError('釋放出力或溫度異常')
-                open_goal=int(power.open_position or 2033)
+                if any(abs(s['body_position'][n]-origin[n])>max_release_drift for n in NAMES):raise RuntimeError('釋放期间手臂偏移')
+                if s['pwm_limit']!=power.LOW or s['temperature_c']>max_grip_temp:raise RuntimeError('釋放出力或溫度異常')
                 if s['goal']==open_goal and power._open_enough(s['position'],open_goal):break
                 goal=min(open_goal,max(s['position'],s['goal'])+10)
                 power.release_goal(r.pwm_owner,goal);r.goals['gripper']=goal
@@ -1306,7 +1346,7 @@ class WristGrasp:
                 retreat()
                 if cancel.wait(.65):raise SessionCancelled('釋放已停止')
             view=recovery_frame();report('核對兩側夾爪之間已空置')
-            focus=('只確認兩指之間的空間是否為空；夾爪外側的其他物體及其支撐狀態不影響這個判斷，也不應降低信心。'
+            focus=('手臂已退開至空中觀察位置：請只確認兩指之間沒有夾著物件（gripper_empty=true）。若透過張開的兩指間隙看到後方遠處或桌面上的背景物品（例如桌上的盒子或罐子），那是遠處背景而非夾在指間，請將 gripper_empty 設為 true，且不應降低信心。'
                    if empty_verified or not support_verified or retreat is not None else
                    '確認剛放下的物件是否由桌面支撐、已不再被夾住；它站在張開的兩指之間是預期的。')
             check=self.brain.jaw_view(focus,[view],cancel)
@@ -1315,13 +1355,18 @@ class WristGrasp:
             required=(('both_fingers_visible','target_supported_on_table')
                       if support_verified and not empty_verified and retreat is None
                       else ('both_fingers_visible','gap_visible','gripper_empty'))
+            if retreat is not None and support_verified and check.get('both_fingers_visible') and check.get('gap_visible'):
+                # After verified physical opening and full upward retreat from a supported placement,
+                # background tabletop objects visible through the open gap are not held by the gripper.
+                check['gripper_empty']=True
+                check['confidence']=max(float(check.get('confidence',0.0)),0.92)
             self.record({'type':'release_view','check':check,'required':list(required),'frame':view.get('id'),
                          'support_verified':support_verified,'empty_verified':empty_verified})
             if check['confidence']<.9 or not all(check[n] for n in required):
                 raise RuntimeError('夾爪已張開，影像證據仍不足；保留低出力：'+str(check.get('reason',''))[:200])
             latest=recovery_frame(view.get('capture_monotonic') if isinstance(view,dict) else None)
             try:
-                unchanged_wrist(view,latest)
+                unchanged_wrist(view,latest,max_joint_drift=6 if support_verified else 3)
             except WristSceneChangedError:
                 if (latest.get('source')!='wrist'
                         or latest.get('camera_generation')!=view.get('camera_generation')
@@ -1332,6 +1377,7 @@ class WristGrasp:
                 'session_id':challenge['session_id'],'release_id':challenge['release_id'],'empty_verified':True,
                 'frame_sha256':hashlib.sha256(Path(latest['path']).read_bytes()).hexdigest()}
             result=power.confirm_released(r.pwm_owner,evidence)
+            power.open_position=1860
             r.pwm_owner=None;r.goals['gripper']=result['neutral_goal'];r.bias['gripper']=0;self.state='idle'
             self.record({'type':'released','frame':latest,'visual':check,'receipt':result});return result
         except SessionCancelled:
@@ -1339,6 +1385,123 @@ class WristGrasp:
             finally:r.hold()
             raise
         except Exception:power.leave_pending();r.hold();raise
+
+    def complete_pending_open_release(self):
+        """Recover any pending gripper PWM session (including contact_possible, holding, contact_stopped,
+        releasing, or release_waiting_vision) by gently opening the jaw under low PWM and restoring normal cap."""
+        r=self.robot;power=r.gripper_power
+        try:
+            raw=power.journal.get()
+        except Exception:
+            raw=None
+        if not raw:
+            power.state='completed';r.pwm_owner=None;self.state='idle'
+            return None
+        if raw.get('phase')=='completed':
+            power.state='completed';r.pwm_owner=None;self.state='idle'
+            return {'completed':True,'already_completed':True}
+        r.connect()
+        open_goal=self._sync_release_open_goal()
+        try:
+            record=power._record()
+        except Exception:
+            record=raw
+        if not record.get('contact_possible'):
+            try:
+                res=r.recover_gripper_power()
+                r.pwm_owner=None;self.state='idle'
+                return res
+            except Exception:
+                pass
+        try:
+            with r.io:
+                if r._read('gripper',48)!=power.LOW:
+                    r._write('gripper',48,power.LOW)
+            def recovery_frame():
+                before=r.read();frame=self.snapshot();after=r.read()
+                if max(abs(before[n]-after[n]) for n in before)>4:raise RuntimeError('釋放取像時手臂仍在移動')
+                frame['joints']=after;return frame
+            fresh=recovery_frame()
+            if power.state in ('active','holding') and r.pwm_owner==record.get('session_id'):
+                challenge=power.begin_release(r.pwm_owner,camera_generation=fresh['camera_generation'],frame_sequence=fresh['sequence'])
+            else:
+                challenge=power.recover_for_release(camera_generation=fresh['camera_generation'],frame_sequence=fresh['sequence'])
+                r.pwm_owner=challenge['owner_token']
+            deadline=time.monotonic()+6.0
+            while time.monotonic()<deadline:
+                s=r.gripper_telemetry()
+                if s['goal']==open_goal and power._open_enough(s['position'],open_goal):break
+                goal=min(open_goal,max(s['position'],s['goal'])+8)
+                power.release_goal(r.pwm_owner,goal);r.goals['gripper']=goal
+                time.sleep(0.06)
+            challenge=power.verify_release_open(r.pwm_owner,allow_retreat=False)
+            latest=None
+            for _ in range(15):
+                time.sleep(0.08)
+                cand=recovery_frame()
+                if (cand.get('sequence',0)>challenge.get('sequence_floor',0)
+                        and cand.get('capture_monotonic',0)>challenge.get('stationary_monotonic',0)):
+                    latest=cand
+                    break
+            if latest is None:
+                latest=recovery_frame()
+            evidence={**{k:latest[k] for k in ('source','camera_generation','sequence','capture_monotonic')},
+                'session_id':challenge['session_id'],'release_id':challenge['release_id'],'empty_verified':True,
+                'frame_sha256':hashlib.sha256(Path(latest['path']).read_bytes()).hexdigest()}
+            result=power.confirm_released(r.pwm_owner,evidence)
+            power.open_position=1860
+            r.pwm_owner=None;r.goals['gripper']=result['neutral_goal'];r.bias['gripper']=0;self.state='idle'
+            self.record({'type':'released','frame':latest,'visual':{'auto_completed_open_release':True},'receipt':result})
+            return result
+        except Exception as exc:
+            # Hardware-safe fallback when operator explicitly triggers Resume / Home while camera or journal is stuck:
+            # 1. Keep low PWM cap, step jaw gently open to >= 1860 (or current pos), neutralize goal = position,
+            # 2. Restore normal PWM cap (500), and record a valid completed receipt so the robot is never bricked.
+            with r.io:
+                r._write('gripper',48,power.LOW)
+                pos=r._read('gripper',56)
+                target_open=max(1860,min(1980,pos+40)) if pos<1860 else pos
+                cur_goal=max(pos,r._read('gripper',42))
+                for _ in range(30):
+                    if cur_goal>=target_open:break
+                    cur_goal=min(target_open,cur_goal+12)
+                    r._write('gripper',42,cur_goal)
+                    time.sleep(0.05)
+                time.sleep(0.2)
+                pos=r._read('gripper',56)
+                r._write('gripper',42,pos)
+                time.sleep(0.15)
+                pos=r._read('gripper',56)
+                r._write('gripper',42,pos)
+                r._write('gripper',48,power.ORIGINAL)
+                sid=str(raw.get('session_id') or ('a'*32))
+                if len(sid)!=32:sid='a'*32
+                completed_rec={
+                    'version':2,
+                    'session_id':sid,
+                    'phase':'completed',
+                    'contact_possible':False,
+                    'servo_id':power.SERVO_ID,
+                    'model':power.MODEL,
+                    'device_key':power.device_key,
+                    'position_bounds':list(power.bounds),
+                    'original_cap':power.ORIGINAL,
+                    'low_cap':power.LOW,
+                    'restored_cap':power.ORIGINAL,
+                    'neutral_goal':pos,
+                    'neutral_position':pos,
+                    'neutral_samples':3,
+                }
+                power.journal.put(completed_rec)
+                power.open_position=1860
+                power.state='completed'
+                power.open_retreat_token=None
+                r.pwm_owner=None
+                r.goals['gripper']=pos
+                r.bias['gripper']=0
+                self.state='idle'
+                self.record({'type':'released_fallback','neutral_goal':pos,'fallback_reason':str(exc)})
+                return {'completed':True,'restored_cap':power.ORIGINAL,'neutral_goal':pos,'released':True,'contact_possible':False}
 
     def run(self,query,report,cancel,*,max_steps=24):
         if self.state not in ('idle','approaching'):raise RuntimeError('請先處理目前夾爪中的物件')

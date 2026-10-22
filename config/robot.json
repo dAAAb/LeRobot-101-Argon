@@ -29,5 +29,6 @@
   "kinematic_model_global": false,
   "gripper_release_tolerance_ticks": 5,
   "gripper_low_pwm_cap": 260,
-  "grasp_backend": "kinematic"
+  "grasp_backend": "kinematic",
+  "max_gripper_temperature_c": 65
 }

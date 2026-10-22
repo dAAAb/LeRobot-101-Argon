@@ -24,6 +24,7 @@ JOINTS=['shoulder_pan','shoulder_lift','elbow_flex','wrist_flex','wrist_roll','g
 HOME_POSE={'shoulder_pan':2030,'shoulder_lift':1103,'elbow_flex':2915,'wrist_flex':2318,'wrist_roll':998}
 READ_ATTEMPTS=3
 READ_RETRY_DELAY_S=.004
+RETRYABLE_COMM_RESULTS=(COMM_RX_TIMEOUT,COMM_RX_CORRUPT)
 SETTLED_IMAGE_WAIT_SECONDS=1.5
 
 class MaintenanceRejected(RuntimeError):
@@ -33,7 +34,7 @@ class MaintenanceRejected(RuntimeError):
 class MotorReadError(RuntimeError):
     def __init__(self,joint,result,error):
         super().__init__(f'{joint} 馬達讀取失敗 ({result}/{error})')
-        self.retryable=not error and result in (COMM_RX_TIMEOUT,COMM_RX_CORRUPT)
+        self.retryable=not error and result in RETRYABLE_COMM_RESULTS
 
 class Robot:
     def __init__(self, config, calibration, runtime, camera):
@@ -146,9 +147,17 @@ class Robot:
                 fault=self._read(n,65,1)
                 if fault:raise RuntimeError(f'{n} 馬達保護狀態 {fault:#04x}，禁止發送新位置或啟用扭力')
             fn=self.ph.write2ByteTxRx if size==2 else self.ph.write1ByteTxRx
-            result,error=self._sdk_transaction(fn,self.calibration[n]['id'],address,int(value),
-                                               busy_result=(COMM_PORT_BUSY,0))
-            if result!=COMM_SUCCESS or error:
+            attempts=READ_ATTEMPTS if (n!='gripper' and address==42) else 1
+            for attempt in range(attempts):
+                result,error=self._sdk_transaction(fn,self.calibration[n]['id'],address,int(value),
+                                                   busy_result=(COMM_PORT_BUSY,0))
+                if result==COMM_SUCCESS and not error:
+                    return
+                if attempt<attempts-1 and result in RETRYABLE_COMM_RESULTS and not error:
+                    time.sleep(READ_RETRY_DELAY_S)
+                    try:self.port.ser.reset_input_buffer()
+                    except Exception:break
+                    continue
                 if hasattr(self,'gripper_power') and self.gripper_power.state in ('active','holding','releasing'):self.gripper_power.leave_pending()
                 raise RuntimeError(f'{n} 馬達寫入失敗 ({result}/{error})')
     def read(self):
@@ -158,9 +167,9 @@ class Robot:
     def pose(self):
         self.connect()
         return self.read()
-    def _is_overheated(self,n):
+    def _is_overheated(self,n,max_temp_c=None):
         """Check servo temperature against configured limit, confirming across 3 consistent reads in (limit, 100] to filter UART turnaround glitches."""
-        limit=int(self.config.get('max_temperature_c',60))
+        limit=int(max_temp_c if max_temp_c is not None else self.config.get('max_temperature_c',68))
         t1=self._read(n,63,1)
         if t1<=limit or t1>100:return False
         try:
@@ -175,11 +184,12 @@ class Robot:
         except Exception:pass
         t3=self._read(n,63,1)
         return limit<t3<=100 and abs(t3-t2)<=3
-    def _stream_segment_to(self,target_body,*,speed_ticks_per_s=240.0,max_tracking_error=220,guard=None,cancel=None):
+    def _stream_segment_to(self,target_body,*,speed_ticks_per_s=240.0,max_tracking_error=220,max_temp_c=None,guard=None,cancel=None):
         """Stream 25 Hz interpolated goals to target_body without intermediate settling delay."""
         body_names=[n for n in ('shoulder_pan','shoulder_lift','elbow_flex','wrist_flex','wrist_roll') if n in target_body]
         if not body_names:return
         self.validate(target_body,margin=12)
+        temp_limit=int(max_temp_c if max_temp_c is not None else self.config.get('max_temperature_c',68))
         with self.io:
             start_goals={n:int(self.goals.get(n,self.position.get(n,target_body[n]))) for n in body_names}
         max_delta=max((abs(int(target_body[n])-start_goals[n]) for n in body_names),default=0)
@@ -203,6 +213,7 @@ class Robot:
                     for n in body_names:
                         if abs(actual[n]-self.goals[n])>max_tracking_error:
                             raise RuntimeError(f'{n} 跟隨誤差過大，停止並保持姿勢')
+                        if self._is_overheated(n,temp_limit):raise RuntimeError(f'{n} 溫度過高，停止移動')
                 step+=1
             if u>=1.0:break
             if self.stop.wait(0.04):raise SessionCancelled('動作已停止')
@@ -297,6 +308,7 @@ class Robot:
         self._require_not_maintenance()
         self.moving=True
         try:
+            self.bias={n:0 for n in JOINTS}
             try:
                 self.begin()
             except RuntimeError as e:
@@ -309,14 +321,20 @@ class Robot:
                 else:
                     raise
             start=self.read()
-            if abs(start['shoulder_pan']-HOME_POSE['shoulder_pan'])>110 and start['elbow_flex']>2680:
+            home_temp_limit=int(self.config.get('max_temperature_c',68))+4
+            if start['shoulder_lift']>1350:
+                if report:report('先沿原方向退回並抬高夾爪，避開前方物件…')
+                retract_pose={k:HOME_POSE[k] for k in ('shoulder_lift','elbow_flex','wrist_flex','wrist_roll')}
+                retract_pose['shoulder_pan']=start['shoulder_pan']
+                self._stream_segment_to(retract_pose,speed_ticks_per_s=speed_ticks_per_s,max_temp_c=home_temp_limit)
+            elif abs(start['shoulder_pan']-HOME_POSE['shoulder_pan'])>110 and start['elbow_flex']>2680:
                 if report:report('先抬起前臂確保桌面淨空，再轉回正前方…')
                 lift_pose=dict(start)
                 lift_pose['elbow_flex']=min(start['elbow_flex'],2640)
                 lift_pose['wrist_flex']=min(start['wrist_flex'],2140)
-                self._stream_segment_to({k:lift_pose[k] for k in ('elbow_flex','wrist_flex')},speed_ticks_per_s=speed_ticks_per_s)
+                self._stream_segment_to({k:lift_pose[k] for k in ('elbow_flex','wrist_flex')},speed_ticks_per_s=speed_ticks_per_s,max_temp_c=home_temp_limit)
             if report:report('正在歸回正前方預設原位 (Home)…')
-            self._stream_segment_to(HOME_POSE,speed_ticks_per_s=speed_ticks_per_s)
+            self._stream_segment_to(HOME_POSE,speed_ticks_per_s=speed_ticks_per_s,max_temp_c=home_temp_limit)
             deadline=time.monotonic()+0.65
             while time.monotonic()<deadline:
                 if self.stop.wait(0.05):raise SessionCancelled('動作已停止')
@@ -390,6 +408,7 @@ class Robot:
                         for n in body_names:
                             if abs(actual[n]-self.goals[n])>max_tracking_error:
                                 raise RuntimeError(f'{n} 跟隨誤差過大，停止並保持姿勢')
+                            if self._is_overheated(n):raise RuntimeError(f'{n} 溫度過高，停止移動')
                         if progress:
                             pct=int(round(u*100.0))
                             progress('moving',f'正在執行單手重映射動作：{title_zh} ({pct}%)…')
@@ -966,8 +985,12 @@ class Robot:
                         self._write(n,42,actual)
                         self.position[n]=actual;self.goals[n]=actual
                     except Exception as e:failures[n]=str(e)
-            hw_failures=[k for k,v in failures.items() if not (k=='gripper' and ('PWM' in v or 'pending journal' in v))]
-            if hw_failures:self.error='部分關節無法確認停止：'+', '.join(hw_failures)
+            if failures:
+                non_pwm=[k for k,v in failures.items() if not (k=='gripper' and ('PWM' in str(v) or 'pending journal' in str(v)))]
+                if non_pwm:
+                    self.error='部分關節無法確認停止：'+', '.join(non_pwm)
+                else:
+                    failures.pop('gripper',None)
         return {'held':not failures,'failures':failures}
 
     def _require_not_maintenance(self):

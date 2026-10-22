@@ -41,6 +41,10 @@ import {
   type ThinkingLevel,
 } from '@/components/ER2SpatialCard';
 import { RealToSimCard } from '@/components/RealToSimCard';
+import {
+  LoopEngineerCard,
+  type LoopEngineerStatus,
+} from '@/components/LoopEngineerCard';
 type Frame = { id: string; url: string; captured_at: number; source?: string };
 type GraspResult = {
   task?: string;
@@ -209,6 +213,7 @@ type Status = {
   capabilities?: { pick?: boolean; place?: boolean; stack?: boolean; command?: boolean; motiongpt?: boolean; er2?: boolean };
   tactics?: { provider: string; available: boolean; model: string };
   grasp?: { state: string; low_power_owner: boolean };
+  loop_engineer?: LoopEngineerStatus;
 };
 type RecognitionResult = { isFinal: boolean; 0: { transcript: string } };
 type Recognition = {
@@ -1379,8 +1384,15 @@ export default function Home() {
           if (
             current.status === 'running' &&
             !['look', 'wave'].includes(current.kind)
-          )
+          ) {
             setResultMode(true);
+            if (
+              ['grasp-attempt', 'object-program', 'inspect', 'command'].includes(current.kind) &&
+              current.query?.trim()
+            ) {
+              setQ(current.query);
+            }
+          }
           if (
             current.status !== 'running' &&
             lastFinished.current !== current.id
@@ -1398,6 +1410,11 @@ export default function Home() {
             } else if (current.action_suggestion) {
               setScene(null);
               setQ(current.action_suggestion.query);
+            } else if (
+              ['grasp-attempt', 'object-program', 'inspect', 'command'].includes(current.kind) &&
+              current.query?.trim()
+            ) {
+              setQ(current.query);
             }
             if (current.status === 'failed') {
               polledError.current = { jobId: current.id, message: current.message };
@@ -1910,6 +1927,66 @@ export default function Home() {
     }
   }
 
+  async function updateLoopEngineerConfig(patch: Record<string, unknown>) {
+    try {
+      const next = await request<LoopEngineerStatus>('/api/loop-engineer/config', patch);
+      setStatus((prev) => (prev ? { ...prev, loop_engineer: next } : prev));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function manualRetryGrasp(retryQuery?: string, diagnoseFirst = true) {
+    if (busy) return;
+    setError('');
+    setSending(true);
+    setResultMode(true);
+    try {
+      const accepted = await request<Job>('/api/loop-engineer/retry', {
+        query: (retryQuery || q || '').trim() || undefined,
+        diagnose_first: diagnoseFirst,
+      });
+      accept(accepted);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function startLoopEngineer(params: {
+    mode: 'custom' | 'random';
+    custom_query: string;
+    duration_hours: number | null;
+  }) {
+    setError('');
+    setResultMode(true);
+    try {
+      const next = await request<LoopEngineerStatus>('/api/loop-engineer/start', params);
+      setStatus((prev) => (prev ? { ...prev, loop_engineer: next } : prev));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function stopLoopEngineer() {
+    try {
+      const next = await request<LoopEngineerStatus>('/api/loop-engineer/stop', {});
+      setStatus((prev) => (prev ? { ...prev, loop_engineer: next } : prev));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function resetLoopEngineerTuning() {
+    try {
+      const next = await request<LoopEngineerStatus>('/api/loop-engineer/reset-tuning', {});
+      setStatus((prev) => (prev ? { ...prev, loop_engineer: next } : prev));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   useEffect(() => {
     if (job?.id && (job.kind === 'motiongpt' || job.kind === 'search' || job.kind === 'command')) {
       if (job.motiongpt_plan && lastSyncedMotionJobId.current !== job.id) {
@@ -1925,12 +2002,18 @@ export default function Home() {
 
   useEffect(() => {
     const instruction = job?.action_suggestion?.instruction?.trim();
-    if (!resultMode || !job?.id || !instruction || lastSyncedSuggestionJobId.current === job.id) return;
+    if (!resultMode || !job?.id || job.status !== 'completed' || !instruction || lastSyncedSuggestionJobId.current === job.id) return;
     lastSyncedSuggestionJobId.current = job.id;
     if (/(揮手|揮揮手|打招呼|伸懶腰|伸展|拳|跳|舞|律動|鞠躬|敬禮|歡呼|點頭|招手|左手|右手|單手|wave|stretch|box|punch|dance|bow|cheer|nod|beckon)/i.test(instruction)) {
       void previewMotion(instruction, preferredArm);
+    } else if (
+      /(往左|往右|向左|向右|左邊|右邊|左方|右方|左側|右側|左下|右下|轉).*(拿|抓|夾|撿|取|放回|放下)|(拿起來|抓起來|夾起來).*(放回|放下)/i.test(
+        instruction,
+      )
+    ) {
+      void executeCommand();
     }
-  }, [resultMode, job?.id, job?.action_suggestion?.instruction, preferredArm, previewMotion]);
+  }, [resultMode, job?.id, job?.status, job?.action_suggestion?.instruction, preferredArm, previewMotion]);
 
   const selected =
     scene && scene.selected_index >= 0
@@ -2356,6 +2439,18 @@ export default function Home() {
               </button>
             </div>
           </div>
+          <div style={{ width: '100%', maxWidth: 760 }}>
+            <LoopEngineerCard
+              loopEngineer={status?.loop_engineer}
+              currentQuery={q}
+              busy={busy}
+              onUpdateConfig={updateLoopEngineerConfig}
+              onManualRetry={manualRetryGrasp}
+              onStartLoop={startLoopEngineer}
+              onStopLoop={stopLoopEngineer}
+              onResetTuning={resetLoopEngineerTuning}
+            />
+          </div>
           <p className="offered">
             讓好奇心，動手做。<span>由 Gemini 4 Argon · Gemini Robotics ER 2 · MIRA Real-to-Sim · MotionGPT 驅動</span>
           </p>
@@ -2491,7 +2586,13 @@ export default function Home() {
                 available={Boolean(status?.er2?.available)}
                 cameraConnected={Boolean(status?.camera.connected)}
                 busy={busy || er2Busy}
-                query={q}
+                query={
+                  (busy && job?.query?.trim()) ||
+                  (job?.kind &&
+                    ['grasp-attempt', 'object-program', 'inspect', 'command'].includes(job.kind) &&
+                    job.query?.trim()) ||
+                  q
+                }
                 thinkingLevel={activeThinkingLevel}
                 onChangeThinkingLevel={(lvl) => void updateBrainConfig({ thinking_level: lvl })}
                 onOpenSettings={() => setSettings(true)}
@@ -2518,6 +2619,16 @@ export default function Home() {
             )}
             <CommandReceipt job={job} stopped={stopped}
               suppressReason={!!error && error === commanded?.reason} />
+            <LoopEngineerCard
+              loopEngineer={status?.loop_engineer}
+              currentQuery={q}
+              busy={busy}
+              onUpdateConfig={updateLoopEngineerConfig}
+              onManualRetry={manualRetryGrasp}
+              onStartLoop={startLoopEngineer}
+              onStopLoop={stopLoopEngineer}
+              onResetTuning={resetLoopEngineerTuning}
+            />
             {job?.kind === 'home' && !busy && job.status === 'completed' && (
               <output className="performed">
                 <Check size={18} />
@@ -2538,6 +2649,19 @@ export default function Home() {
                 <div>
                   <strong>{outcome.title}</strong>
                   <p>{outcome.description}</p>
+                  {!outcome.confirmed && (
+                    <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void manualRetryGrasp(q || status?.loop_engineer?.last_attempt?.query, true)}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-45"
+                      >
+                        <RotateCcw size={14} />
+                        重新確認環境並重試（AI 診斷修正）
+                      </button>
+                    </div>
+                  )}
                   {outcome.frame?.url && (
                     <img
                       src={outcome.frame.url}
