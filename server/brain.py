@@ -164,12 +164,21 @@ class Brain:
         self.last_latency=None;self.last_error='';self.verified=False
         self.error_kind='';self.active=None;self.last_call=None
         self.engine_override=None;self.thinking_level_override=None
+        self.dreamlabs_model='dreamlabs/dream-1-beta'
+        self.smolvla_model='lerobot/smolvla_base'
+    def _selected_engine(self)->str:
+        VALID=('astra','argon','dreamlabs','smolvla')
+        if self.engine_override in VALID:
+            return self.engine_override
+        cfg_eng=self.config.get('brain_engine')
+        if cfg_eng in VALID:
+            return cfg_eng
+        return 'argon' if str(self.config.get('model','')).startswith('gemini') else 'astra'
+
     def _is_gemini(self)->bool:
-        if self.engine_override in ('astra','argon'):
-            return self.engine_override=='argon'
-        if self.config.get('brain_engine') in ('astra','argon'):
-            return self.config.get('brain_engine')=='argon'
-        return str(self.config.get('model','')).startswith('gemini')
+        # Argon, Dream Labs (hybrid spatial VLM + Dream-1 VLA), and SmolVLA (hybrid spatial VLM + SmolVLA)
+        # use the Gemini Robotics ER 2 spatial vision backbone for structured 3D tabletop schemas.
+        return self._selected_engine() in ('argon','dreamlabs','smolvla')
 
     def _gemini_api_key(self)->str:
         from .er2_brain import _read_gemini_api_key
@@ -180,11 +189,16 @@ class Brain:
         return lvl if lvl in ('none','low','medium','high') else 'low'
 
     def engine(self)->str:
-        return 'argon' if self._is_gemini() else 'astra'
+        return self._selected_engine()
 
     def active_model(self)->str:
+        eng=self._selected_engine()
         cfg_model=str(self.config.get('model',''))
-        if self._is_gemini():
+        if eng=='dreamlabs':
+            return self.dreamlabs_model or 'dreamlabs/dream-1-beta'
+        if eng=='smolvla':
+            return self.smolvla_model or 'lerobot/smolvla_base'
+        if eng=='argon':
             return cfg_model if cfg_model.startswith('gemini') else 'gemini-robotics-er-2-preview'
         return 'gpt-6-astra' if cfg_model.startswith('gemini') else (cfg_model or 'gpt-6-astra')
 
@@ -194,17 +208,28 @@ class Brain:
         if active:active.pop('started_monotonic',None)
         has_key=bool(self._gemini_api_key())
         has_codex=bool(shutil.which('codex'))
+        from .vla_policies import read_dreamlabs_api_key
+        has_dreamlabs=bool(read_dreamlabs_api_key())
         tl=self.thinking_level()
         eff='low' if tl=='none' else tl
+        eng=self._selected_engine()
         model_name=self.active_model()
-        if self._is_gemini():
-            avail=has_key or has_codex
-            transport='google-genai' if has_key else ('local-codex' if has_codex else 'google-genai')
-            return {'model':model_name,'engine':'argon','thinking_level':tl,'reasoning_effort':eff,
+        if eng in ('argon','dreamlabs','smolvla'):
+            avail=(has_dreamlabs if eng=='dreamlabs' else True) and (has_key or has_codex)
+            transport={
+                'argon':'google-genai' if has_key else ('local-codex' if has_codex else 'google-genai'),
+                'dreamlabs':'dreamlabs-cloud+er2',
+                'smolvla':'lerobot-smolvla+er2',
+            }[eng]
+            return {'model':model_name,'engine':eng,'thinking_level':tl,'reasoning_effort':eff,
+                    'dreamlabs_model':self.dreamlabs_model,'smolvla_model':self.smolvla_model,
+                    'dreamlabs_configured':has_dreamlabs,
                     'api_key_configured':has_key,'codex_available':has_codex,'transport':transport,'inference':'cloud',
                     'available':avail,'verified':self.verified,'latency':self.last_latency,'error':self.last_error,
                     'error_kind':self.error_kind,'phase':active['phase'] if active else 'idle','active':active,'last_call':self.last_call}
         return {'model':model_name,'engine':'astra','thinking_level':tl,'reasoning_effort':eff,
+                'dreamlabs_model':self.dreamlabs_model,'smolvla_model':self.smolvla_model,
+                'dreamlabs_configured':has_dreamlabs,
                 'api_key_configured':has_key,'codex_available':has_codex,'transport':'local-codex','inference':'cloud',
                 'available':has_codex,'verified':self.verified,'latency':self.last_latency,'error':self.last_error,
                 'error_kind':self.error_kind,'phase':active['phase'] if active else 'idle','active':active,'last_call':self.last_call}
@@ -331,7 +356,11 @@ For unsupported external clearance or human assessment, set the corresponding fl
                 pass
         started=time.monotonic()
         tl=self.thinking_level()
-        model_name=self.active_model()
+        raw_model=self.active_model()
+        model_name=raw_model if raw_model.startswith('gemini') else 'gemini-robotics-er-2-preview'
+        # Fast real-time motor-loop schemas must use zero thinking budget (~1.2s instead of 18s)
+        if schema_model.__name__ in ('JawView','UprightObjectFeet','GraspVerification','WaveClearance','GraspAdvice'):
+            tl='none'
         record={'id':uuid.uuid4().hex,'started_at':time.time(),'schema':schema_model.__name__,
                 'model':model_name,'reasoning_effort':tl,
                 'image_count':len(frames),'reference_present':bool(reference),
@@ -391,6 +420,19 @@ For unsupported external clearance or human assessment, set the corresponding fl
                         b.update(x=round(x,4),y=round(y,4),w=round(w,4),h=round(h,4))
                 if 'bbox' in data and isinstance(data['bbox'],dict):
                     _clamp_box(data['bbox'])
+                def _clamp_point(p):
+                    if isinstance(p,dict) and 'x' in p and 'y' in p and 'w' not in p:
+                        try:
+                            px,py=float(p['x']),float(p['y'])
+                            if px>1.0:px=px/1000.0
+                            if py>1.0:py=py/1000.0
+                            p['x']=round(min(max(px,0.0),1.0),4)
+                            p['y']=round(min(max(py,0.0),1.0),4)
+                        except (TypeError,ValueError):
+                            pass
+                for k_pt in ('bottom_left','bottom_right','top_center','point','center'):
+                    if k_pt in data and isinstance(data[k_pt],dict):
+                        _clamp_point(data[k_pt])
                 if 'objects' in data and isinstance(data['objects'],list):
                     max_fi=max(0,min(3,len(frames)-1))
                     for obj in data['objects']:

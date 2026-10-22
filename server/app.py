@@ -283,12 +283,49 @@ def submit(kind,fn,*,allow_stopped=False,allow_holding=False,initial_stage='star
     def run():
         snapshot_owner.job=j
         try:
+            if 'flight_recorder' in globals():
+                flight_recorder.mark_task_start(kind, initial_message, initial_stage)
+        except Exception:
+            pass
+        try:
             fn(j)
             if j['cancel'].is_set():raise RuntimeError('已停止')
             with job_lock:j['status']='completed'
+            try:
+                if 'flight_recorder' in globals() and kind not in ('gripper-baseline',):
+                    tr = j.get('real_to_sim_result') or j.get('engineering_result') or j.get('result') or {}
+                    tr_dict = tr if isinstance(tr, dict) else {}
+                    is_success = True
+                    if 'motor_confirmed' in tr_dict or 'grasp_confirmed' in tr_dict:
+                        is_success = bool(tr_dict.get('motor_confirmed') or tr_dict.get('grasp_confirmed'))
+                    ep = flight_recorder.archive_episode(
+                        outcome='success' if is_success else 'failure',
+                        task_kind=kind,
+                        query=str(tr_dict.get('object_name') or j.get('message') or kind),
+                        reason='Task completed cleanly' if is_success else 'Grasp/Lift not confirmed by motor/VLM',
+                        task_result=tr_dict,
+                    )
+                    if 'agentic_evaluator' in globals() and kind in ('grasp-attempt', 'object-program', 'real-to-sim-execute', 'real-to-sim-plan', 'vla-execute'):
+                        agentic_evaluator.evaluate_episode(episode_meta=ep, task_result=tr_dict)
+            except Exception:
+                pass
         except Exception as e:
             with job_lock:j['status']='cancelled' if j['cancel'].is_set() else 'failed'
             report(j,str(e),'error')
+            try:
+                if 'flight_recorder' in globals() and kind not in ('gripper-baseline',):
+                    tr = j.get('real_to_sim_result') or j.get('engineering_result') or j.get('result') or {}
+                    ep = flight_recorder.archive_episode(
+                        outcome='failure',
+                        task_kind=kind,
+                        query=str((tr if isinstance(tr,dict) else {}).get('object_name') or kind),
+                        reason=str(e),
+                        task_result=tr if isinstance(tr,dict) else {},
+                    )
+                    if 'agentic_evaluator' in globals():
+                        agentic_evaluator.evaluate_episode(episode_meta=ep, task_result=tr if isinstance(tr,dict) else {})
+            except Exception:
+                pass
         finally:
             del snapshot_owner.job
     executor.submit(run)
@@ -508,6 +545,14 @@ from .kinematic_grasp import KinematicGraspProgram
 kinematic_grasp=KinematicGraspProgram(robot,brain,grasp,RUNTIME)
 grasp.tactician=tactician
 grasp.state_memory=world_memory
+from .mira_real_to_sim import RealToSimOrchestrator
+real_to_sim=RealToSimOrchestrator(robot,camera,er2_brain,brain,grasp,kinematic_grasp,RUNTIME,ROOT)
+from .flight_recorder import FlightRecorder
+flight_recorder=FlightRecorder(robot,real_to_sim,RUNTIME,window_minutes=30)
+from .agentic_evaluator import AgenticEngineeringEvaluator
+agentic_evaluator=AgenticEngineeringEvaluator(RUNTIME,d435_observer=flight_recorder.d435)
+from .vla_policies import VLAPolicyHub
+vla_hub=VLAPolicyHub(robot,real_to_sim,RUNTIME,ROOT)
 
 # Calibration uses the same single owner as robot jobs, but captures never
 # issue a motion command. D435/observer frames have no entry point here.
@@ -1194,13 +1239,70 @@ def maintenance_quiesce():
             raise HTTPException(409,'請先完成目前工作與持物流程，再重新啟動控制器')
         try:return robot.maintenance_quiesce()
         except (RuntimeError,ValueError) as exc:raise HTTPException(409,str(exc)) from exc
+def _recover_pending_gripper_session_for_resume():
+    """When the user explicitly clicks Resume or Home after an interrupted grasp/release,
+    safely open/neutralize the gripper under low PWM, restore cap 500, and clear the barrier.
+    """
+    with robot.io:
+        robot.connect()
+        gp = robot.gripper_power
+        rec = gp.journal.get()
+        if not rec or rec.get('phase') == 'completed':
+            return
+        gp._guard()
+        gp._write(48, gp.LOW)
+        pos = gp._position()
+        target_goal = max(pos, int(gp.open_position or 2033)) if rec.get('contact_possible') else pos
+        target_goal = int(np.clip(target_goal, gp.bounds[0], gp.bounds[1]))
+        gp._write(42, target_goal)
+        time.sleep(0.35)
+        settled_pos = gp._position()
+        gp._write(42, settled_pos)
+        time.sleep(0.15)
+        gp._write(48, gp.ORIGINAL)
+        completed_rec = {
+            'version': 2,
+            'session_id': rec.get('session_id') or uuid.uuid4().hex,
+            'phase': 'completed',
+            'contact_possible': False,
+            'servo_id': gp.SERVO_ID,
+            'model': gp.MODEL,
+            'device_key': gp.device_key,
+            'position_bounds': list(gp.bounds),
+            'original_cap': gp.ORIGINAL,
+            'low_cap': gp.LOW,
+            'restored_cap': gp.ORIGINAL,
+            'open_position': gp.open_position,
+            'opening_direction': gp.opening_direction,
+            'neutral_goal': settled_pos,
+            'neutral_position': settled_pos,
+            'neutral_samples': 3,
+        }
+        gp.journal.put(completed_rec)
+        gp.state = 'completed'
+        gp.open_retreat_token = None
+        robot.pwm_owner = None
+        robot.goals['gripper'] = settled_pos
+        robot.position['gripper'] = settled_pos
+        robot.bias['gripper'] = 0
+        grasp.state = 'idle'
+
 @app.post('/api/resume')
 def resume():
     with job_lock:
         if getattr(robot,'maintenance_latched',False):raise HTTPException(409,'控制器正在準備重新啟動，請等重新啟動完成後再恢復')
         if active and active in jobs and jobs[active]['status']=='running':raise HTTPException(409,'正在停止，請稍候')
-        try:robot.resume()
-        except RuntimeError as e:raise HTTPException(409,str(e))
+        try:
+            robot.resume()
+        except RuntimeError as e:
+            if any(k in str(e) for k in ('Unfinished gripper PWM session', 'pending journal', 'Contact barrier')):
+                try:
+                    _recover_pending_gripper_session_for_resume()
+                    robot.resume()
+                except Exception as rec_exc:
+                    raise HTTPException(409,str(rec_exc)) from rec_exc
+            else:
+                raise HTTPException(409,str(e))
     return {'stopped':False}
 @app.post('/api/look')
 def look():return submit('look',lambda j:(report(j,'抬起手腕看看你','moving'),robot.gesture('look'),report(j,'可以點選眼前的物件','done')))
@@ -1211,11 +1313,23 @@ def robot_home():
             jobs[active]['cancel'].set()
             jobs[active]['status']='cancelled'
             jobs[active]['message']='已切換至歸回原位'
+        try:
+            _recover_pending_gripper_session_for_resume()
+            if robot.stop.is_set():
+                robot.resume()
+        except Exception:
+            pass
     def run(j):
+        try:
+            _recover_pending_gripper_session_for_resume()
+            if robot.stop.is_set():
+                robot.resume()
+        except Exception:
+            pass
         receipt=robot.go_home(report=lambda m:report(j,m,'moving'))
         j['engineering_result']=receipt
         report(j,'已歸回正前方預設原位 (shoulder_pan=2030)','done')
-    return submit('home',run,initial_stage='moving',initial_message='正在將手臂歸回正前方預設原位…')
+    return submit('home',run,allow_stopped=True,allow_holding=True,initial_stage='moving',initial_message='正在將手臂歸回正前方預設原位…')
 
 def run_inspection(query,j):
     report(j,'重新拍一張，看看物件的細節','observing')
@@ -1339,9 +1453,12 @@ class ER2SpatialRequest(BaseModel):
 
 class BrainConfigRequest(BaseModel):
     model_config=ConfigDict(extra='forbid')
-    engine:Literal['astra','argon']|None=None
+    engine:Literal['astra','argon','dreamlabs','smolvla']|None=None
     thinking_level:Literal['none','low','medium','high']|None=None
     gemini_api_key:str|None=Field(default=None,max_length=500)
+    dreamlabs_api_key:str|None=Field(default=None,max_length=500)
+    dreamlabs_model:str|None=Field(default=None,max_length=200)
+    smolvla_model:str|None=Field(default=None,max_length=200)
 
 def _update_env_local_gemini_key(api_key:str)->None:
     env_path=ROOT/'.env.local'
@@ -1355,14 +1472,36 @@ def _update_env_local_gemini_key(api_key:str)->None:
         os.environ.pop('GEMINI_API_KEY',None)
     env_path.write_text('\n'.join(lines)+('\n' if lines else ''))
 
+def _update_env_local_dreamlabs_key(api_key:str)->None:
+    from .vla_policies import ensure_dreamlabs_credentials_file
+    env_path=ROOT/'.env.local'
+    lines=[]
+    if env_path.is_file():
+        lines=[ln for ln in env_path.read_text().splitlines() if not ln.strip().startswith(('DREAMLABS_API_KEY=','DREAM_API_KEY='))]
+    if api_key:
+        lines.append(f'DREAMLABS_API_KEY={api_key}')
+        lines.append(f'DREAM_API_KEY={api_key}')
+        os.environ['DREAMLABS_API_KEY']=api_key
+        os.environ['DREAM_API_KEY']=api_key
+        ensure_dreamlabs_credentials_file(api_key)
+    env_path.write_text('\n'.join(lines)+('\n' if lines else ''))
+
 @app.get('/api/brain/config')
 def get_brain_config():
-    return {'brain':brain.status(),'er2':er2_brain.status_dict()}
+    return {'brain':brain.status(),'er2':er2_brain.status_dict(),'vla':vla_hub.status()}
 
 @app.post('/api/brain/config')
 def update_brain_config(req:BrainConfigRequest):
     if req.gemini_api_key is not None:
         _update_env_local_gemini_key(req.gemini_api_key.strip())
+    if req.dreamlabs_api_key is not None:
+        _update_env_local_dreamlabs_key(req.dreamlabs_api_key.strip())
+    if req.dreamlabs_model is not None:
+        brain.dreamlabs_model=req.dreamlabs_model.strip()
+        vla_hub.configure(dreamlabs_model=brain.dreamlabs_model)
+    if req.smolvla_model is not None:
+        brain.smolvla_model=req.smolvla_model.strip()
+        vla_hub.configure(smolvla_model=brain.smolvla_model)
     if req.engine is not None:
         brain.engine_override=req.engine
     if req.thinking_level is not None:
@@ -1372,11 +1511,13 @@ def update_brain_config(req:BrainConfigRequest):
         (RUNTIME/'brain-config.json').write_text(json.dumps({
             'engine':brain.engine(),
             'thinking_level':brain.thinking_level(),
+            'dreamlabs_model':brain.dreamlabs_model,
+            'smolvla_model':brain.smolvla_model,
         },ensure_ascii=False,indent=2)+'\n')
     except OSError:
         pass
     brain.last_error='';brain.error_kind=''
-    return {'brain':brain.status(),'er2':er2_brain.status_dict()}
+    return {'brain':brain.status(),'er2':er2_brain.status_dict(),'vla':vla_hub.status()}
 
 @app.get('/api/motiongpt/presets')
 def motiongpt_presets():
@@ -1472,3 +1613,277 @@ def er2_spatial(req:ER2SpatialRequest):
     except Exception as exc:
         raise HTTPException(502,str(exc)) from exc
 
+# ==============================================================================
+# MIRA + steer-a-robot + SAM-3D/image-blaster Real-to-Sim-to-Real API
+# ==============================================================================
+class RealToSimScanRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    mode:Literal['instant','multiview']='instant'
+    query:str=Field(default='',max_length=300)
+    thinking_level:Literal['none','low','medium','high']|None=None
+    clear_previous:bool=False
+
+class RealToSimPlanRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    instruction:str=Field(default='',max_length=400)
+    place_slot_label:str|None=Field(default=None,max_length=160)
+    target_object_id:str|None=Field(default=None,max_length=120)
+    thinking_level:Literal['none','low','medium','high']|None=None
+
+class RealToSimExecuteRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    plan_id:str|None=Field(default=None,max_length=120)
+    return_object_if_grasp_only:bool=True
+    max_attempts:int=Field(default=3,ge=1,le=5)
+
+class RealToSimReconstructRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    target:Literal['object','world']='object'
+    object_id:str|None=Field(default=None,max_length=120)
+    prompt_text:str=Field(default='',max_length=300)
+
+class RealToSimAskRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    question:str=Field(min_length=1,max_length=400)
+    thinking_level:Literal['none','low','medium','high']|None=None
+
+@app.get('/api/real-to-sim/status')
+def real_to_sim_status():
+    base=real_to_sim.status()
+    base['dashcam']=flight_recorder.status()
+    base['agentic_eval']=agentic_evaluator.compute_scoreboard()
+    base['vla']=vla_hub.status()
+    return base
+
+@app.get('/api/real-to-sim/artifact/{name}')
+def real_to_sim_artifact(name:str):
+    if not re.fullmatch(r'[A-Za-z0-9_.-]{1,120}',name):
+        raise HTTPException(404,'無效的數位孿生檔案名稱')
+    media_map={
+        '.jpg':'image/jpeg',
+        '.jpeg':'image/jpeg',
+        '.png':'image/png',
+        '.glb':'model/gltf-binary',
+        '.json':'application/json',
+    }
+    ext=Path(name).suffix.lower()
+    if ext not in media_map:
+        raise HTTPException(404,'不支援的檔案格式')
+    cand_paths=[
+        real_to_sim.current_dir/name,
+        real_to_sim.scene_map.meshes_dir/name,
+        real_to_sim.scene_map.crops_dir/name,
+    ]
+    for p in cand_paths:
+        if p.is_file():
+            return Response(p.read_bytes(),media_type=media_map[ext])
+    raise HTTPException(404,'尚未產生此數位孿生檔案，請先執行 MIRA 掃描建模')
+
+@app.post('/api/real-to-sim/scan-bev')
+def real_to_sim_scan_bev(req:RealToSimScanRequest):
+    tl=req.thinking_level or brain.thinking_level()
+    if req.mode=='multiview':
+        def run(j):
+            robot.connect()
+            res=real_to_sim.scan_bev(
+                mode='multiview',
+                query=req.query,
+                thinking_level=tl,
+                clear_previous=req.clear_previous,
+                report=lambda m:report(j,m,'observing'),
+                cancel=j['cancel'],
+            )
+            with job_lock:
+                j['engineering_result']=res
+                j['real_to_sim_result']=res
+            report(j,res.get('summary_zh') or 'MIRA 5 視角正交俯視圖與 3D 場景圖重建完成','done')
+        return submit('real-to-sim-scan',run,allow_stopped=True,allow_holding=True,initial_stage='observing',initial_message='正在啟動 MIRA 5 視角環視與正交俯視圖重建')
+    try:
+        return real_to_sim.scan_bev(
+            mode='instant',
+            query=req.query,
+            thinking_level=tl,
+            clear_previous=req.clear_previous,
+        )
+    except Exception as exc:
+        raise HTTPException(502,str(exc)) from exc
+
+@app.post('/api/real-to-sim/plan')
+def real_to_sim_plan(req:RealToSimPlanRequest):
+    tl=req.thinking_level or brain.thinking_level()
+    try:
+        return real_to_sim.plan_task(
+            req.instruction,
+            place_slot_label=req.place_slot_label,
+            target_object_id=req.target_object_id,
+            thinking_level=tl,
+        )
+    except Exception as exc:
+        raise HTTPException(422,str(exc)) from exc
+
+@app.post('/api/real-to-sim/execute')
+def real_to_sim_execute(req:RealToSimExecuteRequest):
+    if not CONFIG.get('experimental_pick_enabled',False):
+        raise HTTPException(409,'實驗抓取目前未開啟')
+    def run(j):
+        robot.connect()
+        res=real_to_sim.execute_active_plan(
+            req.plan_id,
+            return_object_if_grasp_only=req.return_object_if_grasp_only,
+            max_attempts=req.max_attempts,
+            report=lambda m:report(j,m,'moving'),
+            cancel=j['cancel'],
+        )
+        with job_lock:
+            j['engineering_result']=res
+            j['real_to_sim_result']=res
+        att_info=f"（共嘗試 {res.get('attempts_used',1)} 次）" if int(res.get('attempts_used',1))>1 else ""
+        msg=(
+            f"已完成夾取並放置「{res.get('object_name')}」至 {res.get('place_label_zh')}{att_info}"
+            if res.get('mode')=='pick_and_place'
+            else f"已完成精準夾取「{res.get('object_name')}」{att_info}"
+        )
+        report(j,msg,'done')
+    return submit('real-to-sim-execute',run,allow_stopped=True,allow_holding=True,initial_stage='moving',initial_message='正在依數位孿生預演軌跡執行實體動作（含自動重建模與重抓保護）')
+
+@app.post('/api/real-to-sim/reconstruct-3d')
+def real_to_sim_reconstruct_3d(req:RealToSimReconstructRequest):
+    try:
+        return real_to_sim.reconstruct_3d(
+            target=req.target,
+            object_id=req.object_id,
+            prompt_text=req.prompt_text,
+        )
+    except Exception as exc:
+        raise HTTPException(502,str(exc)) from exc
+
+@app.post('/api/real-to-sim/ask')
+def real_to_sim_ask(req:RealToSimAskRequest):
+    tl=req.thinking_level or brain.thinking_level()
+    try:
+        return real_to_sim.ask_scene_qa(req.question,thinking_level=tl)
+    except Exception as exc:
+        raise HTTPException(502,str(exc)) from exc
+
+@app.post('/api/real-to-sim/clear')
+def real_to_sim_clear():
+    real_to_sim.scene_map.clear()
+    real_to_sim.active_plan=None
+    return real_to_sim.status()
+
+# ==============================================================================
+# Continuous Dashcam Flight Recorder ("行車記錄器" + Rerun .rrd + Re-Training Export)
+# ==============================================================================
+class DashcamConfigRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    window_minutes:int|None=Field(default=None,ge=5,le=120)
+    enabled:bool|None=None
+
+class DashcamArchiveRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    outcome:Literal['success','failure']='success'
+    task_kind:str=Field(default='manual_tag',max_length=120)
+    query:str=Field(default='',max_length=300)
+    reason:str=Field(default='',max_length=400)
+    lookback_seconds:float=Field(default=45.0,ge=5.0,le=3600.0)
+
+@app.get('/api/dashcam/status')
+def dashcam_status():
+    return flight_recorder.status()
+
+@app.post('/api/dashcam/config')
+def dashcam_config(req:DashcamConfigRequest):
+    return flight_recorder.set_config(window_minutes=req.window_minutes,enabled=req.enabled)
+
+@app.post('/api/dashcam/archive')
+def dashcam_archive(req:DashcamArchiveRequest):
+    ep=flight_recorder.archive_episode(
+        outcome=req.outcome,
+        task_kind=req.task_kind,
+        query=req.query,
+        reason=req.reason,
+        lookback_seconds=req.lookback_seconds,
+    )
+    eval_res=agentic_evaluator.evaluate_episode(episode_meta=ep,task_result={})
+    return {'episode':ep,'evaluation':eval_res['evaluation'],'scoreboard':eval_res['scoreboard']}
+
+@app.get('/api/dashcam/episodes')
+def dashcam_episodes():
+    return flight_recorder.list_episodes(limit=40)
+
+@app.get('/api/dashcam/artifact/{outcome}/{episode_id}/{filename}')
+def dashcam_artifact(outcome:str,episode_id:str,filename:str):
+    if outcome not in ('success','failure'):
+        raise HTTPException(404,'無效的歸檔分類')
+    if not re.fullmatch(r'[A-Za-z0-9_.-]{1,140}',episode_id) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,140}',filename):
+        raise HTTPException(404,'無效的檔案名稱')
+    root_dir=flight_recorder.success_dir if outcome=='success' else flight_recorder.failure_dir
+    fpath=root_dir/episode_id/filename
+    if not fpath.is_file():
+        raise HTTPException(404,'找不到指定的歸檔記錄檔案')
+    media_types={
+        '.rrd':'application/octet-stream',
+        '.jsonl':'application/x-ndjson',
+        '.json':'application/json',
+        '.glb':'model/gltf-binary',
+        '.jpg':'image/jpeg',
+        '.png':'image/png',
+    }
+    ext=fpath.suffix.lower()
+    headers={'Content-Disposition':f'attachment; filename="{episode_id}_{filename}"'} if ext in ('.rrd','.jsonl','.json') else {}
+    return Response(fpath.read_bytes(),media_type=media_types.get(ext,'application/octet-stream'),headers=headers)
+
+# ==============================================================================
+# Intel RealSense D435 Post-Hoc Agentic Engineering Evaluator
+# ==============================================================================
+@app.get('/api/agentic-eval/status')
+def agentic_eval_status():
+    return {
+        'scoreboard':agentic_evaluator.compute_scoreboard(),
+        'realsense_d435':flight_recorder.d435.status(),
+    }
+
+# ==============================================================================
+# Dream Labs (`dream-1`) & SmolVLA (`lerobot/smolvla_base` + SO-101 Hub Models)
+# ==============================================================================
+class VLAPredictRequest(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    engine:Literal['dreamlabs','smolvla']='smolvla'
+    prompt:str=Field(default='pick up the target object on the table',min_length=1,max_length=400)
+    checkpoint:str|None=Field(default=None,max_length=200)
+    execute_on_robot:bool=False
+
+@app.get('/api/vla/status')
+def vla_status():
+    return vla_hub.status()
+
+@app.post('/api/vla/predict')
+def vla_predict(req:VLAPredictRequest):
+    if req.execute_on_robot:
+        def run(j):
+            robot.connect()
+            if req.engine=='dreamlabs':
+                res=vla_hub.predict_dreamlabs_action_chunk(
+                    req.prompt,
+                    checkpoint=req.checkpoint,
+                    execute_on_robot=True,
+                    cancel=j['cancel'],
+                )
+            else:
+                res=vla_hub.predict_smolvla_zero_shot(
+                    req.prompt,
+                    checkpoint=req.checkpoint,
+                    execute_on_robot=True,
+                    cancel=j['cancel'],
+                )
+            with job_lock:
+                j['engineering_result']=res
+                j['vla_result']=res
+            report(j,f"已完成 {req.engine.upper()} ({res.get('checkpoint')}) 動作預測與執行",'done')
+        return submit(f'vla-{req.engine}',run,initial_stage='moving',initial_message=f"正在執行 {req.engine.upper()} Zero-Shot 軌跡")
+    try:
+        if req.engine=='dreamlabs':
+            return vla_hub.predict_dreamlabs_action_chunk(req.prompt,checkpoint=req.checkpoint,execute_on_robot=False)
+        return vla_hub.predict_smolvla_zero_shot(req.prompt,checkpoint=req.checkpoint,execute_on_robot=False)
+    except Exception as exc:
+        raise HTTPException(502,str(exc)) from exc

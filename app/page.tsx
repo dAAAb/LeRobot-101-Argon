@@ -40,6 +40,7 @@ import {
   type ER2SpatialResult,
   type ThinkingLevel,
 } from '@/components/ER2SpatialCard';
+import { RealToSimCard } from '@/components/RealToSimCard';
 type Frame = { id: string; url: string; captured_at: number; source?: string };
 type GraspResult = {
   task?: string;
@@ -174,8 +175,11 @@ type Status = {
   };
   brain: {
     model: string;
-    engine?: 'astra' | 'argon';
+    engine?: 'astra' | 'argon' | 'dreamlabs' | 'smolvla';
     thinking_level?: ThinkingLevel;
+    dreamlabs_model?: string;
+    smolvla_model?: string;
+    dreamlabs_configured?: boolean;
     reasoning_effort?: string;
     api_key_configured?: boolean;
     codex_available?: boolean;
@@ -1798,9 +1802,12 @@ export default function Home() {
     (status?.brain?.thinking_level as ThinkingLevel | undefined) || 'low';
 
   async function updateBrainConfig(payload: {
-    engine?: 'astra' | 'argon';
+    engine?: 'astra' | 'argon' | 'dreamlabs' | 'smolvla';
     thinking_level?: ThinkingLevel;
     gemini_api_key?: string;
+    dreamlabs_api_key?: string;
+    dreamlabs_model?: string;
+    smolvla_model?: string;
   }) {
     setBrainConfigSaving(true);
     setBrainConfigSavedNote('');
@@ -2178,7 +2185,7 @@ export default function Home() {
           <button
             className="connection"
             style={{ whiteSpace: 'nowrap', color: '#5f6368' }}
-            title="點擊切換 Argon (Gemini ER 2) / Astra (Codex) 推論引擎與 Thinking Level"
+            title="點擊切換 Argon / Astra / Dream Labs / SmolVLA 推論引擎與 Thinking Level"
             onClick={() => setSettings(true)}
           >
             <Sparkles size={15} />
@@ -2186,7 +2193,11 @@ export default function Home() {
               ? status?.brain?.api_key_configured
                 ? 'Argon ER 2'
                 : 'Argon (Astra 備援)'
-              : 'Astra'}{' '}
+              : activeEngine === 'dreamlabs'
+                ? 'Dream Labs (Dream-1)'
+                : activeEngine === 'smolvla'
+                  ? 'SmolVLA (SO-101)'
+                  : 'Astra'}{' '}
             · Thinking: {activeThinkingLevel}
           </button>
           <button className="connection" onClick={() => setSettings(true)}>
@@ -2231,7 +2242,15 @@ export default function Home() {
         <main className="home">
           <div className="brand">
             <Logo />
-            <span className="astra">{activeEngine === 'argon' ? 'Argon' : 'Astra'}</span>
+            <span className="astra">
+              {activeEngine === 'argon'
+                ? 'Argon'
+                : activeEngine === 'dreamlabs'
+                  ? 'Dream-1'
+                  : activeEngine === 'smolvla'
+                    ? 'SmolVLA'
+                    : 'Astra'}
+            </span>
           </div>
           {searchBar}
           <div className="searchbuttons" style={{ flexWrap: 'wrap' }}>
@@ -2246,7 +2265,7 @@ export default function Home() {
           </div>
           <div className="home-motion-strip" aria-label="單手自然動作與推論引擎快速選擇">
             <div className="home-motion-label" style={{ marginBottom: 8, flexWrap: 'wrap', gap: 10 }}>
-              <span>視覺推論引擎：</span>
+              <span>推論與動作模型：</span>
               <div className="arm-selector" role="group" aria-label="視覺推論引擎選擇">
                 <button
                   type="button"
@@ -2263,6 +2282,22 @@ export default function Home() {
                   onClick={() => void updateBrainConfig({ engine: 'astra' })}
                 >
                   Astra (Codex)
+                </button>
+                <button
+                  type="button"
+                  className={activeEngine === 'dreamlabs' ? 'active' : ''}
+                  disabled={brainConfigSaving}
+                  onClick={() => void updateBrainConfig({ engine: 'dreamlabs' })}
+                >
+                  Dream Labs (Dream-1)
+                </button>
+                <button
+                  type="button"
+                  className={activeEngine === 'smolvla' ? 'active' : ''}
+                  disabled={brainConfigSaving}
+                  onClick={() => void updateBrainConfig({ engine: 'smolvla' })}
+                >
+                  SmolVLA (SO-101)
                 </button>
               </div>
               <span style={{ marginLeft: 4 }}>Thinking：</span>
@@ -2307,10 +2342,22 @@ export default function Home() {
                   {chip.label}
                 </button>
               ))}
+              <button
+                type="button"
+                className="motion-chip"
+                style={{ borderColor: 'rgba(99, 102, 241, 0.5)', background: 'rgba(79, 70, 229, 0.12)', fontWeight: 600 }}
+                disabled={busy}
+                onClick={() => {
+                  setResultMode(true);
+                  setTab('r2s');
+                }}
+              >
+                ✨ MIRA × Steer-a-Robot 3D 數位孿生沙盒
+              </button>
             </div>
           </div>
           <p className="offered">
-            讓好奇心，動手做。<span>由 Gemini 4 Argon · Gemini Robotics ER 2 · MotionGPT 驅動</span>
+            讓好奇心，動手做。<span>由 Gemini 4 Argon · Gemini Robotics ER 2 · MIRA Real-to-Sim · MotionGPT 驅動</span>
           </p>
           {reference && (
             <p className="reference-hint">
@@ -2330,6 +2377,12 @@ export default function Home() {
               onClick={() => setTab('all')}
             >
               全部
+            </button>
+            <button
+              className={tab === 'r2s' ? 'active' : ''}
+              onClick={() => setTab('r2s')}
+            >
+              Real-to-Sim 3D 沙盒
             </button>
             <button
               className={tab === 'motion' ? 'active' : ''}
@@ -2404,6 +2457,18 @@ export default function Home() {
                   ? '已停止，保持目前姿勢。'
                   : '已停止發送動作。'}
               </div>
+            )}
+            {(tab === 'r2s' || tab === 'all') && (
+              <RealToSimCard
+                request={request}
+                busy={busy}
+                thinkingLevel={activeThinkingLevel}
+                onJobStarted={(newJob) => {
+                  if (newJob && typeof newJob === 'object' && 'id' in newJob) {
+                    accept(newJob as Job);
+                  }
+                }}
+              />
             )}
             {(tab === 'all' || tab === 'motion') && motionPlan && (
               <MotionRetargetCard
@@ -2791,7 +2856,7 @@ export default function Home() {
             <div>
               <dt>推論引擎</dt>
               <dd>
-                <div className="arm-selector" role="group" aria-label="設定視窗推論引擎選擇">
+                <div className="arm-selector" role="group" aria-label="設定視窗推論引擎選擇" style={{ flexWrap: 'wrap' }}>
                   <button
                     type="button"
                     className={activeEngine === 'argon' ? 'active' : ''}
@@ -2807,6 +2872,22 @@ export default function Home() {
                     onClick={() => void updateBrainConfig({ engine: 'astra' })}
                   >
                     Astra (Codex)
+                  </button>
+                  <button
+                    type="button"
+                    className={activeEngine === 'dreamlabs' ? 'active' : ''}
+                    disabled={brainConfigSaving}
+                    onClick={() => void updateBrainConfig({ engine: 'dreamlabs' })}
+                  >
+                    Dream Labs (Dream-1)
+                  </button>
+                  <button
+                    type="button"
+                    className={activeEngine === 'smolvla' ? 'active' : ''}
+                    disabled={brainConfigSaving}
+                    onClick={() => void updateBrainConfig({ engine: 'smolvla' })}
+                  >
+                    SmolVLA (SO-101)
                   </button>
                 </div>
               </dd>

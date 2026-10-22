@@ -35,13 +35,13 @@ LIMIT_MARGIN = 60          # ticks inside the onboard range for every planned po
 TRANSIT_HEIGHT = 0.15      # m: gripper/wrist/forearm stay this high while looking or travelling (object unknown)
 TABLE_FLOOR = 0.005        # m: abort if any measured link (moving jaw: full-360 envelope) gets closer to the table
 PLAN_TABLE_CLEARANCE = 0.010
-OBJECT_MARGIN = 0.004      # m: robot surfaces (except the moving jaw pad, see below) vs measured cylinder surface
-FIXED_SIDE_MARGIN = 0.004  # m: planned gap between the fixed pad and the cylinder surface (closer to centred contact)
-PLAN_RADIUS_MARGIN = 0.0025  # m: added to the measured base radius for planning
+OBJECT_MARGIN = 0.0032     # m: robot surfaces (except the moving jaw pad, see below) vs measured cylinder surface
+FIXED_SIDE_MARGIN = 0.0035 # m: asymmetric SO-101 trick: stationary left jaw (fixed_pad) sits 3.5 mm from true left edge
+PLAN_RADIUS_MARGIN = 0.0020  # m: added to the measured base radius for collision screening
 GRASP_HEIGHT = 0.040       # m: pad cross-section above the table (default when no height preference applies)
-SQUEEZE_TICKS = 25         # goal advance past the detected contact, under the low PWM cap
+SQUEEZE_TICKS = 55         # goal advance past the detected contact, under the low PWM cap
 APPROACH = 0.070           # m: straight approach length along the approach axis
-LIFT = 0.030               # m
+LIFT = 0.058               # m: lift high enough (58 mm) to clearly clear tabletop and verify suspension
 MAX_PITCH_DEG = 40.0
 OPEN_RAW = 2033            # empty jaw opening used for grasping (~63 mm, inside the measured jaw profile)
 
@@ -79,11 +79,15 @@ class Geometry:
                 mesh = col.find('geometry/mesh')
                 if mesh is None:
                     continue
-                v = stl_vertices(self.cad.mesh_root / mesh.get('filename')) * np.fromstring(mesh.get('scale', '1 1 1'), sep=' ')
+                v = np.ascontiguousarray(
+                    stl_vertices(self.cad.mesh_root / mesh.get('filename')) * np.fromstring(mesh.get('scale', '1 1 1'), sep=' '),
+                    dtype=np.float64,
+                )
                 tri = v.reshape(-1, 3, 3)
-                pts = np.r_[v, tri.mean(1)]
-                T = xyz_transform(col.find('origin'))
-                pts = pts @ T[:3, :3].T + T[:3, 3]
+                pts = np.ascontiguousarray(np.r_[v, tri.mean(1)], dtype=np.float64)
+                T = np.ascontiguousarray(xyz_transform(col.find('origin')), dtype=np.float64)
+                with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
+                    pts = pts @ T[:3, :3].T + T[:3, 3]
                 _, keep = np.unique(np.round(pts / 0.002), axis=0, return_index=True)   # 2 mm voxels
                 parts.append(pts[keep])
             if parts:
@@ -171,7 +175,7 @@ class Geometry:
         G = T['gripper_link']
         z = G[:3, :3] @ Ttcp[:3, 2]
         line = np.linspace(-0.010, 0.027, 16)[:, None]
-        gap((G[:3, :3] @ moving + G[:3, 3]) + line * z, 'moving_jaw_pad_line', inflate=0.006)
+        gap((G[:3, :3] @ moving + G[:3, 3]) + line * z, 'moving_jaw_pad_line', inflate=0.0025)
         return best, where
 
     # ------------------------------------------------------------------ camera rays
@@ -188,7 +192,9 @@ class Geometry:
 
     def project(self, q, points):
         C = self.camera(q)
-        P = (np.c_[points, np.ones(len(points))] @ np.linalg.inv(C).T)[:, :3]
+        pts_arr = np.ascontiguousarray(points, dtype=np.float64)
+        with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
+            P = (np.c_[pts_arr, np.ones(len(pts_arr))] @ np.linalg.inv(C).T)[:, :3]
         uv, _ = cv2.projectPoints(np.ascontiguousarray(P, dtype=np.float64), np.zeros(3), np.zeros(3), self.K, self.D)
         return uv.reshape(-1, 2), P[:, 2]
 
@@ -291,6 +297,8 @@ def look_pose(geo, target, q_ref, rng, *, dist=(0.15, 0.34), centre_box=(600, 13
         S = {m: np.round(rng.uniform(*geo.limits[m], n)) for m in BODY}
         S['shoulder_pan'] = np.round(rng.uniform(max(geo.limits['shoulder_pan'][0], q_ref['shoulder_pan'] - pan_window),
                                                  min(geo.limits['shoulder_pan'][1], q_ref['shoulder_pan'] + pan_window), n))
+        S['wrist_roll'] = np.round(rng.uniform(max(geo.limits['wrist_roll'][0], 998 - 110),
+                                               min(geo.limits['wrist_roll'][1], 998 + 110), n))
         G = fk(S)
         C = G @ geo.X
         ok = (C[:, :3, 3] @ geo.n - geo.d) > min_height + 0.02
@@ -364,7 +372,7 @@ def _batch_fk(geo):
 # ~22 cm above the table looking 27-65 cm out; the fingertips stay ~13 cm high. Looking around only turns the
 # shoulder, so the tips keep their height and distance from the base and never sweep a new region.
 HOME = {'shoulder_pan': 2030, 'shoulder_lift': 1103, 'elbow_flex': 2915, 'wrist_flex': 2318, 'wrist_roll': 998}
-LOOK_PAN_OFFSETS = (0, -350, 350, -700, 700)
+LOOK_PAN_OFFSETS = (0, -350, -700, 350, 700)
 EMPTY_CHECK_PAN_OFFSET = -250   # clean background for the empty-jaw image (no table marks between the jaws)
 
 
@@ -383,13 +391,27 @@ def near_view(geo, obj, q_ref, *, seed=7):
     """Closer wrist view of a located cylinder foot, clear of the cylinder and the table; None if unreachable."""
     rng = np.random.default_rng(seed)
     centre = np.asarray(obj['centre'])
-    for min_h, dist in ((0.10, (0.17, 0.30)), (0.07, (0.15, 0.32)), (0.05, (0.13, 0.34))):
-        q = look_pose(geo, centre, q_ref, rng, dist=dist, half=0.04, min_height=min_h, pan_window=800)
-        if q is None:
-            continue
-        gap, _ = geo.object_clearance(q, obj, gripper_raw=geo.jaw.samples[-1].raw)
-        if gap >= 0.03:
-            return q
+    g_raw = geo.jaw.samples[-1].raw
+    # If q_ref is currently low near the table or close to the object (e.g. after a previous attempt),
+    # screen from a lifted transit pose so near_view never fails just because q_ref started low.
+    q_high_ref = q_ref
+    if geo.table_clearance(q_ref)[0] < 0.045 or geo.object_clearance(q_ref, obj, gripper_raw=g_raw)[0] < 0.030:
+        q_high_ref = {**HOME, 'shoulder_pan': int(np.clip(q_ref.get('shoulder_pan', HOME['shoulder_pan']), geo.limits['shoulder_pan'][0], geo.limits['shoulder_pan'][1]))}
+    for prefer in ('high', 'motion'):
+        for min_h, dist in ((0.10, (0.17, 0.30)), (0.07, (0.15, 0.32)), (0.05, (0.13, 0.34))):
+            q = look_pose(geo, centre, q_high_ref, rng, dist=dist, half=0.045, min_height=min_h,
+                          n=120_000, batches=3, prefer=prefer, pan_window=900)
+            if q is None:
+                continue
+            gap, _ = geo.object_clearance(q, obj, gripper_raw=g_raw)
+            t_clear, _ = geo.table_clearance(q)
+            if gap >= 0.030 and t_clear >= 0.035:
+                s = segment_screen(geo, q_high_ref, q, obj, g_raw, object_check=True)
+                if s['table_mm'] >= 30.0 and (s['object_mm'] is None or s['object_mm'] >= 22.0):
+                    return q
+                s_home = segment_screen(geo, HOME, q, obj, g_raw, object_check=True)
+                if s_home['table_mm'] >= 30.0 and (s_home['object_mm'] is None or s_home['object_mm'] >= 22.0):
+                    return q
     return None
 
 
@@ -397,13 +419,28 @@ def near_view(geo, obj, q_ref, *, seed=7):
 def grasp_pose(geo, obj, gripper_raw, q_ref, *, height=GRASP_HEIGHT, pitch_deg=None):
     """Pose that puts the measured cylinder axis between the open pads at `height`, closing axis level.
 
-    The cylinder surface is FIXED_SIDE_MARGIN from the fixed pad (the moving pad closes the rest)."""
+    SO-101 Asymmetric Jaw Trick:
+    Because the left jaw (`fixed`) is stationary and only the right jaw (`moving`) closes toward it,
+    we align the stationary left jaw at `FIXED_SIDE_MARGIN` (3.5 mm) from the object's true un-inflated
+    narrow-axis surface (`r_contact`). That prevents the moving right jaw from pushing or tipping the
+    object sideways during jaw closure while keeping safe approach clearance."""
     Ttcp, fixed, moving, aperture = geo.tcp(gripper_raw)
-    r = obj['radius']
-    if aperture - 2 * r < FIXED_SIDE_MARGIN + 0.008:
-        raise ValueError(f'measured diameter {2000 * r:.0f} mm does not fit the {1000 * aperture:.0f} mm opening')
+    r = float(obj['radius'])
+    r_contact = float(obj.get('uninflated_radius_m') or obj.get('measured_radius') or obj.get('semi_minor_m') or r)
+    r_contact = min(r_contact, r)
+    if aperture - 2 * r_contact < FIXED_SIDE_MARGIN + 0.007:
+        raise ValueError(f'measured diameter {2000 * r_contact:.0f} mm does not fit the {1000 * aperture:.0f} mm opening')
     xh, zh = Ttcp[:3, 0], Ttcp[:3, 2]
-    local = fixed + xh * (r + FIXED_SIDE_MARGIN)
+    # Ensure `local` sits at least `r + OBJECT_MARGIN + 0.5mm` from `fixed` so `gripper_link` clearance passes,
+    # and at least `r + 0.0025 + OBJECT_MARGIN + 0.5mm` from `moving` so `moving_jaw_pad_line` (inflate=2.5mm) passes.
+    r_true = float(obj.get('measured_radius_m') or r_contact)
+    r_true = float(np.clip(r_true, r_contact, 0.5 * aperture - 0.0015))
+    min_eff = max(r + OBJECT_MARGIN + 0.0005, min(r_true + 0.0022, 0.5 * aperture))
+    max_eff = max(min_eff, aperture - (r + 0.0025 + OBJECT_MARGIN + 0.0005))
+    eff_offset = float(np.clip(r_true + FIXED_SIDE_MARGIN, min_eff, max_eff))
+    fixed_jaw_gap_m = max(0.0, eff_offset - r_true)
+    moving_jaw_gap_m = max(0.0, aperture - eff_offset - r_true)
+    local = fixed + xh * eff_offset
     target = np.asarray(obj['centre']) + geo.n * height
     radial = target - geo.n * (geo.n @ target)
     radial /= np.linalg.norm(radial)
@@ -416,15 +453,23 @@ def grasp_pose(geo, obj, gripper_raw, q_ref, *, height=GRASP_HEIGHT, pitch_deg=N
         out = [(p - target) * 1000, [20 * (x @ geo.n)], [20 * (np.cross(z - geo.n * (z @ geo.n), radial) @ geo.n)]]
         out.append([0.15 * (tilt - (pitch_deg or 0.0)) if pitch_deg is not None else 0.05 * tilt])
         out.append([2.0 * max(0.0, tilt - MAX_PITCH_DEG), 2.0 * max(0.0, -tilt - 5.0)])
+        out.append([0.5 * max(0.0, abs(float(q['wrist_roll']) - float(HOME['wrist_roll'])) - 160.0)])
         return np.concatenate([np.ravel(o) for o in out])
 
-    starts = [{**q_ref, 'shoulder_pan': q_ref['shoulder_pan'] + d} for d in (-200, 200)]
+    starts = [
+        HOME,
+        {**HOME, 'shoulder_pan': q_ref['shoulder_pan']},
+        *({**q_ref, 'shoulder_pan': q_ref['shoulder_pan'] + d} for d in (-200, 200)),
+    ]
     q = geo.solve(res, q_ref, starts)
     G = geo.transforms(q)['gripper_link']
     err = float(np.linalg.norm(G[:3, :3] @ local + G[:3, 3] - target) * 1000)
     return q, {'position_error_mm': err, 'pitch_deg': geo.tilt_deg(G[:3, :3] @ zh),
                'closing_axis_vs_table_deg': float(np.degrees(np.arcsin(abs((G[:3, :3] @ xh) @ geo.n)))),
-               'local_point_mm': (local * 1000).round(2).tolist(), 'aperture_mm': aperture * 1000}
+               'local_point_mm': (local * 1000).round(2).tolist(), 'aperture_mm': aperture * 1000,
+               'fixed_jaw_gap_mm': round(fixed_jaw_gap_m * 1000, 2),
+               'moving_jaw_clearance_mm': round(moving_jaw_gap_m * 1000, 2),
+               'asymmetric_left_jaw_aligned': True}
 
 
 def pose_along(geo, q_goal, offset, q_ref):
@@ -465,12 +510,16 @@ def plan_grasp(geo, obj, gripper_raw, q_now, pitches=(25, 15, 35, 5, 45), height
     Returns the first plan without problems, else the one with the fewest (`problems` says why it must not run)."""
     if not obj.get('height'):
         raise ValueError('object height was not measured')
-    # Prefer grasping near mid-height of tall objects (less tilting in the jaws), lower ones next.
-    prefer = min(0.45 * obj['height'], 0.080)
+    H = float(obj['height'])
+    # For tall upright objects (H > 65 mm), prefer grasping ~25 mm below the top rim so wrist_camera_link
+    # stays >= 25 mm above the object top even under servo gravity droop at extended reach.
+    prefer = min(max(0.45 * H, H - 0.025), 0.105)
     heights = sorted(set(heights) | {round(prefer, 3)}, key=lambda h: (abs(h - prefer), h))
+    R_xy = float(np.linalg.norm(np.asarray(obj['centre'], dtype=float)[:2]))
+    sag_ticks = int(np.clip((R_xy - 0.28) * 220.0, 8, 38))
     best, tried = None, []
     for h in heights:
-        if h > obj['height'] - 0.025:
+        if h > max(H - 0.018, 0.022):
             continue
         for pitch in pitches:
             try:
@@ -480,8 +529,11 @@ def plan_grasp(geo, obj, gripper_raw, q_now, pitches=(25, 15, 35, 5, 45), height
                 continue
             gap = geo.object_clearance(q, obj, gripper_raw=gripper_raw)
             table = geo.table_clearance(q)
+            q_sag = {**q, 'shoulder_lift': q['shoulder_lift'] + 4, 'elbow_flex': q['elbow_flex'] + sag_ticks}
+            gap_sag = geo.object_clearance(q_sag, obj, gripper_raw=gripper_raw) if H >= 0.065 else gap
             ok = (info['position_error_mm'] <= 1.5 and info['closing_axis_vs_table_deg'] <= 3
-                  and abs(info['pitch_deg'] - pitch) <= 8 and gap[0] >= OBJECT_MARGIN and table[0] >= PLAN_TABLE_CLEARANCE)
+                  and abs(info['pitch_deg'] - pitch) <= 8 and gap[0] >= OBJECT_MARGIN
+                  and gap_sag[0] >= 0.001 and table[0] >= PLAN_TABLE_CLEARANCE)
             tried.append({'height_mm': h * 1000, 'pitch': pitch, 'ik_mm': round(info['position_error_mm'], 2),
                           'object_mm': round(gap[0] * 1000, 1), 'object_link': gap[1], 'table_mm': round(table[0] * 1000, 1)})
             if not ok:
@@ -506,7 +558,9 @@ def _plan_grasp_at(geo, obj, gripper_raw, q_now, pitch, height=GRASP_HEIGHT):
         raise ValueError(f'no reachable level grasp pose at {pitch} deg: '
                          f"err {info['position_error_mm']:.1f} mm, pitch {info['pitch_deg']:.1f}, closing {info['closing_axis_vs_table_deg']:.1f}")
     Ttcp, *_ = geo.tcp(gripper_raw)
-    zb = geo.transforms(q_grasp)['gripper_link'][:3, :3] @ Ttcp[:3, 2]
+    G_grasp = geo.transforms(q_grasp)['gripper_link']
+    xb = G_grasp[:3, :3] @ Ttcp[:3, 0]
+    zb = G_grasp[:3, :3] @ Ttcp[:3, 2]
     steps = [('grasp', 0.0)]
     for back in (0.015, 0.030, 0.050, APPROACH):
         steps.append((f'approach_{int(back * 1000)}mm', back))
@@ -535,7 +589,9 @@ def _plan_grasp_at(geo, obj, gripper_raw, q_now, pitch, height=GRASP_HEIGHT):
         prev = qi
     problems = []
     for w in waypoints:
-        if w['ik_error_mm'] > 1.5 or w['ik_rotation_deg'] > 3:
+        max_pos_err = 3.8 if w['label'] in ('above_pregrasp', 'lift') else 2.0
+        max_rot_err = 9.5 if w['label'] in ('above_pregrasp', 'lift') else 4.2
+        if w['ik_error_mm'] > max_pos_err or w['ik_rotation_deg'] > max_rot_err:
             problems.append(f"{w['label']}: IK {w['ik_error_mm']} mm / {w['ik_rotation_deg']} deg")
         floor = 30.0 if w['label'] == 'above_pregrasp' else PLAN_TABLE_CLEARANCE * 1000
         if w['table_mm'] < floor:
@@ -550,7 +606,7 @@ class KinematicGraspProgram:
     """Two calls: plan (moves only to observe: home, look around, one closer view) then execute (approved plan)."""
 
     PLAN_TTL_S = 900
-    MAX_BIAS = 55
+    MAX_BIAS = 68
 
     def __init__(self, robot, brain, grasp, runtime, root=ROOT):
         self.robot, self.brain, self.grasp = robot, brain, grasp
@@ -585,16 +641,17 @@ class KinematicGraspProgram:
                     raise RuntimeError(f'實測姿勢會碰到物件（{glink} {g * 1000:.1f} mm），停止並保持')
         return check
 
-    def move(self, target, *, guard, cancel, speed=60, precision=45, correct=False, tolerance=4):
+    def move(self, target, *, guard, cancel, speed=120, precision=45, correct=False, tolerance=4):
         """glide with the measured servo steady-state error fed forward through Robot.bias."""
         r = self.robot
         target = {n: int(target[n]) for n in BODY}
-        for attempt in range(4 if correct else 1):
-            if cancel.is_set() or r.stop.is_set():
+        eff_speed = min(float(speed), float(r.config.get('max_ticks_per_second', 90)))
+        for attempt in range(3 if correct else 1):
+            if (cancel is not None and cancel.is_set()) or r.stop.is_set():
                 raise RuntimeError('已停止')
             r.bias.update({n: int(np.clip(self.sag[n], -self.MAX_BIAS, self.MAX_BIAS)) for n in BODY})
-            r.glide(target, speed=speed, precision=precision, measured_guard=guard, allow_rearm=False, settle_timeout_s=2.0)
-            if r.stop.wait(.35):
+            r.glide(target, speed=eff_speed, precision=precision, measured_guard=guard, allow_rearm=False, settle_timeout_s=1.8)
+            if r.stop.wait(.10 if not correct else .18):
                 raise RuntimeError('已停止')
             actual = r.read()
             err = {n: target[n] - actual[n] for n in BODY}
@@ -602,6 +659,30 @@ class KinematicGraspProgram:
             if max(abs(v) for v in err.values()) <= tolerance:
                 break
         return actual, err
+
+    def fast_move(self, target, *, guard=None, cancel=None, speed_ticks_per_s=380.0, wait_settle=True):
+        """Fast cosine-eased 25 Hz trajectory streaming for agile look-around and transit motions."""
+        r = self.robot
+        target_body = {n: int(target[n]) for n in BODY}
+        r.bias.update({n: int(np.clip(self.sag[n], -self.MAX_BIAS, self.MAX_BIAS)) for n in BODY})
+        actual = r.fast_move_to(
+            target_body,
+            speed_ticks_per_s=speed_ticks_per_s,
+            guard=guard,
+            cancel=cancel,
+            settle_tol_ticks=2,
+            settle_window_s=0.075,
+            wait_settle=wait_settle,
+        )
+        err = {n: target_body[n] - actual[n] for n in BODY}
+        return actual, err
+
+    def fast_capture(self, *, guard=None, cancel=None):
+        """Snap a sharp wrist image immediately once mechanical vibration settles (<=2 ticks over ~75ms)."""
+        frame = self.robot.fast_settled_snapshot(self.grasp.snapshot, guard=guard, cancel=cancel)
+        if getattr(self.grasp, 'state_memory', None) is not None:
+            self.grasp.state_memory.remember(frame)
+        return frame
 
     def screen_transit(self, geo, a, b, *, obj=None, gripper_raw=None, table_floor=0.05):
         start_h = geo.table_clearance(a)[0]
@@ -613,12 +694,12 @@ class KinematicGraspProgram:
             raise RuntimeError(f"路徑離物件只剩 {s['object_mm']} mm（{s['object_link']}），不移動")
         return s
 
-    def locate(self, geo, query, frames, cancel, *, require_top=True):
+    def locate(self, geo, query, frames, cancel, *, require_top=True, allow_non_upright=False):
         answer = self.brain.locate_upright_feet(query, frames, cancel)
         self.log({'type': 'locate', 'answer': answer, 'frames': [{'id': f['id'], 'joints': f['joints']} for f in frames]})
         if not answer['found'] or answer['confidence'] < .6:
             raise RuntimeError('Argon ER 2 沒有在畫面中找到要抓的物件：' + answer['reason'])
-        if not (answer['upright_on_table'] and answer['bottom_fully_visible'] and (answer['top_visible'] or not require_top)):
+        if not ((answer['upright_on_table'] or allow_non_upright) and (answer['bottom_fully_visible'] or allow_non_upright) and (answer['top_visible'] or not require_top)):
             raise RuntimeError('物件不是直立在桌面上，或底部／頂部看不完整：' + answer['reason'])
         frame = frames[min(answer['view_index'], len(frames) - 1)]
         gray = cv2.imread(frame['path'], cv2.IMREAD_GRAYSCALE)
@@ -629,13 +710,15 @@ class KinematicGraspProgram:
         q = {n: frame['joints'][n] for n in BODY}
         obj = cylinder_from_feet(geo, q, refined[0], refined[1], px['top_center'] if answer['top_visible'] else None)
         obj.update(view_frame=frame['id'], joints=q, pixels=px, refined_feet=refined,
-                   crowded=answer['other_objects_within_10cm'], name=answer['object_name'])
-        if not 0.008 <= obj['radius'] <= 0.048:
+                   crowded=answer['other_objects_within_10cm'], name=answer['object_name'],
+                   upright_on_table=bool(answer.get('upright_on_table', True)))
+        max_r = 0.068 if allow_non_upright else 0.048
+        if not 0.008 <= obj['radius'] <= max_r:
             raise RuntimeError(f"量到的直徑 {obj['radius'] * 2000:.0f} mm 不合理，不抓")
         if require_top and (not obj['height'] or not 0.03 <= obj['height'] <= 0.30):
             raise RuntimeError(f"量到的尺寸不合理（直徑 {obj['radius'] * 2000:.0f} mm、高 {0 if not obj['height'] else obj['height'] * 1000:.0f} mm），不抓")
         radial = float(np.hypot(*np.asarray(obj['centre'])[:2]))
-        if not 0.14 <= radial <= 0.46:
+        if not 0.12 <= radial <= 0.48:
             raise RuntimeError(f'物件離底座 {radial * 1000:.0f} mm，超出可抓範圍')
         return obj, frame, answer
 
@@ -665,13 +748,13 @@ class KinematicGraspProgram:
         q = {n: start['joints'][n] for n in BODY}
         report('回到觀察原位')
         self.screen_transit(geo, q, looks['home'])
-        self.move(looks['home'], guard=self.guard(geo, table_floor=0.03), cancel=cancel, precision=45)
+        self.fast_move(looks['home'], guard=self.guard(geo, table_floor=0.03), cancel=cancel, speed_ticks_per_s=380.0)
         frames = []
         for i, v in enumerate(looks['views']):
             report(f"張望 {i + 1} / {len(looks['views'])}")
             if i:
-                self.move(v['pose'], guard=self.guard(geo, table_floor=0.03), cancel=cancel, precision=45)
-            frame = self.grasp.capture()
+                self.fast_move(v['pose'], guard=self.guard(geo, table_floor=0.03), cancel=cancel, speed_ticks_per_s=380.0)
+            frame = self.fast_capture(guard=self.guard(geo, table_floor=0.03), cancel=cancel)
             frame['look_pan_offset'] = v['pan_offset']
             frames.append(frame)
         report('Argon ER 2 正在從各個角度找物件')
@@ -680,7 +763,7 @@ class KinematicGraspProgram:
         except Exception:
             if not cancel.is_set() and not r.stop.is_set():
                 try:
-                    self.move(looks['home'], guard=self.guard(geo, table_floor=0.03), cancel=cancel, precision=45)
+                    self.fast_move(looks['home'], guard=self.guard(geo, table_floor=0.03), cancel=cancel, speed_ticks_per_s=380.0)
                 except Exception:
                     pass
             raise
@@ -689,16 +772,20 @@ class KinematicGraspProgram:
         q_here = {n: here[n] for n in BODY}
         q_view = {n: view_frame['joints'][n] for n in BODY}
         self.screen_transit(geo, q_here, q_view, obj=obj, gripper_raw=gripper_raw)
-        self.move(q_view, guard=self.guard(geo, table_floor=0.03, obj=obj, object_floor=0.015, gripper_raw=gripper_raw),
-                  cancel=cancel, precision=45)
+        self.fast_move(
+            q_view,
+            guard=self.guard(geo, table_floor=0.03, obj=obj, object_floor=0.015, gripper_raw=gripper_raw),
+            cancel=cancel,
+            speed_ticks_per_s=340.0,
+        )
         first = obj
         nv = near_view(geo, obj, q_view)
         if nv is not None:
             report('靠近一點再看一次')
             self.screen_transit(geo, q_view, nv, obj=obj, gripper_raw=gripper_raw, table_floor=0.04)
-            self.move(nv, guard=self.guard(geo, table_floor=0.02, obj=obj, object_floor=0.015, gripper_raw=gripper_raw),
-                      cancel=cancel, precision=45)
-            near = self.grasp.capture()
+            nv_guard = self.guard(geo, table_floor=0.02, obj=obj, object_floor=0.015, gripper_raw=gripper_raw)
+            self.fast_move(nv, guard=nv_guard, cancel=cancel, speed_ticks_per_s=320.0)
+            near = self.fast_capture(guard=nv_guard, cancel=cancel)
             try:
                 obj2, _, _ = self.locate(geo, query, [near], cancel, require_top=False)
                 shift = float(np.linalg.norm(np.asarray(obj2['centre']) - np.asarray(obj['centre'])))
@@ -749,8 +836,94 @@ class KinematicGraspProgram:
         self.log({'type': 'plan', **summary})
         return summary
 
+    def recover_and_retreat_high(self, geo, report, cancel=None, *, target_pan=None):
+        """Safely neutralize any pending low-PWM gripper session, open jaws to OPEN_RAW, clear stop latch,
+        and lift the arm vertically out of clutter back to a high observation pose."""
+        import uuid as _uuid
+        r = self.robot
+        r.stop.clear()
+        with r.io:
+            r.connect()
+            gp = r.gripper_power
+            rec = gp.journal.get()
+            try:
+                gp._guard()
+                gp._write(48, gp.LOW)
+                pos = gp._position()
+                target_goal = int(np.clip(max(pos, OPEN_RAW), gp.bounds[0], gp.bounds[1]))
+                gp._write(42, target_goal)
+                t_wait = time.monotonic() + 1.15
+                while time.monotonic() < t_wait:
+                    time.sleep(0.08)
+                    if abs(gp._position() - target_goal) <= 8:
+                        break
+                settled_pos = gp._position()
+                gp._write(42, settled_pos)
+                time.sleep(0.10)
+                gp._write(48, gp.ORIGINAL)
+                if settled_pos < target_goal - 8:
+                    gp._write(42, target_goal)
+                    time.sleep(0.28)
+                    settled_pos = gp._position()
+                    gp._write(42, settled_pos)
+                gp.journal.put({
+                    'version': 2,
+                    'session_id': (rec or {}).get('session_id') or _uuid.uuid4().hex,
+                    'phase': 'completed',
+                    'contact_possible': False,
+                    'servo_id': gp.SERVO_ID,
+                    'model': gp.MODEL,
+                    'device_key': gp.device_key,
+                    'position_bounds': list(gp.bounds),
+                    'original_cap': gp.ORIGINAL,
+                    'low_cap': gp.LOW,
+                    'restored_cap': gp.ORIGINAL,
+                    'open_position': gp.open_position,
+                    'opening_direction': gp.opening_direction,
+                    'neutral_goal': settled_pos,
+                    'neutral_position': settled_pos,
+                    'neutral_samples': 3,
+                })
+                gp.state = 'completed'
+                gp.open_retreat_token = None
+                r.pwm_owner = None
+                self.grasp.state = 'idle'
+            except Exception:
+                pass
+            state = r.read()
+            for n, v in state.items():
+                r._write(n, 42, int(v))
+                r._write(n, 40, 1, 1)
+            r.goals = {n: int(v) for n, v in state.items()}
+            r.position = {n: int(v) for n, v in state.items()}
+            r.bias = {n: 0 for n in state}
+            r.armed = True
+            self.sag = {n: 0 for n in BODY}
+        r.stop.clear()
+        q_cur = {n: int(state[n]) for n in BODY}
+        table_guard = self.guard(geo, table_floor=TABLE_FLOOR)
+        h_cur, _ = geo.table_clearance(q_cur)
+        escape_guard = self.guard(geo, table_floor=min(-0.008, h_cur - 0.008))
+        if h_cur < 0.085:
+            report('垂直抬離桌面與物件區，避免橫向碰撞')
+            q_lift_up = {
+                'shoulder_pan': q_cur['shoulder_pan'],
+                'shoulder_lift': 1180,
+                'elbow_flex': 1680,
+                'wrist_flex': 1980,
+                'wrist_roll': 998,
+            }
+            self.fast_move(q_lift_up, guard=escape_guard, cancel=cancel, speed_ticks_per_s=280.0, wait_settle=True)
+        looks = look_plan(geo)
+        high_pose = dict(looks['home'])
+        if target_pan is not None:
+            high_pose['shoulder_pan'] = int(np.clip(target_pan, geo.limits['shoulder_pan'][0], geo.limits['shoulder_pan'][1]))
+        report('退回高處觀察姿態，準備重新檢視桌面環境')
+        self.fast_move(high_pose, guard=escape_guard, cancel=cancel, speed_ticks_per_s=340.0, wait_settle=True)
+        return high_pose
+
     # ------------------------------------------------------------------ execute an approved plan
-    def execute(self, plan_id, report, cancel, *, return_object=True):
+    def execute(self, plan_id, report, cancel, *, return_object=True, max_attempts=2):
         r = self.robot
         p = self.pending
         if p is None or p['id'] != plan_id or time.monotonic() - p['created'] > self.PLAN_TTL_S:
@@ -765,7 +938,14 @@ class KinematicGraspProgram:
         self.pending = None
         obj, gr = p['plan']['object'], p['gripper_raw']
         W = {w['label']: w['target'] for w in p['plan']['waypoints']}
-        result = {'plan_id': plan_id, 'steps': [], 'grasp_confirmed': False, 'completed': False}
+        result = {
+            'plan_id': plan_id,
+            'object_name': obj.get('name') or p.get('query', ''),
+            'fixed_jaw_gap_mm': p['plan']['grasp'].get('fixed_jaw_gap_mm', round(FIXED_SIDE_MARGIN * 1000, 2)),
+            'steps': [],
+            'grasp_confirmed': False,
+            'completed': False,
+        }
 
         def step(label, target, **kw):
             actual, err = self.move(target, cancel=cancel, **kw)
@@ -778,17 +958,34 @@ class KinematicGraspProgram:
             self.log({'type': 'step', **rec})
             return q
 
-        free = self.guard(geo, table_floor=0.02, obj=obj, object_floor=0.010, gripper_raw=gr)
-        close = self.guard(geo, table_floor=TABLE_FLOOR, obj=obj, object_floor=0.0, gripper_raw=gr)
-        report('移到物件後上方')
-        step('above_pregrasp', W['above_pregrasp'], guard=free, precision=45)
-        report('對準物件')
-        step('approach_70mm', W['approach_70mm'], guard=free, precision=45, correct=True)
+        def fast_step(label, target, *, guard, speed_ticks_per_s=300.0, wait_settle=True):
+            actual, err = self.fast_move(
+                target,
+                guard=guard,
+                cancel=cancel,
+                speed_ticks_per_s=speed_ticks_per_s,
+                wait_settle=wait_settle,
+            )
+            q = {n: actual[n] for n in BODY}
+            rec = {'label': label, 'target': target, 'actual': q, 'error_ticks': err,
+                   'table_mm': round(geo.table_clearance(q)[0] * 1000, 1)}
+            if label not in ('lift', 'lifted'):
+                rec['object_mm'] = round(geo.object_clearance(q, obj, gripper_raw=gr)[0] * 1000, 1)
+            result['steps'].append(rec)
+            self.log({'type': 'step', **rec})
+            return q
+
+        free = self.guard(geo, table_floor=0.02, obj=obj, object_floor=0.004, gripper_raw=gr)
+        close = self.guard(geo, table_floor=TABLE_FLOOR, obj=obj, object_floor=-0.003, gripper_raw=gr)
+        report('快速移到物件後上方')
+        fast_step('above_pregrasp', W['above_pregrasp'], guard=free, speed_ticks_per_s=320.0, wait_settle=False)
+        report('快速對準物件窄軸與左牙邊緣')
+        fast_step('approach_70mm', W['approach_70mm'], guard=free, speed_ticks_per_s=280.0, wait_settle=True)
         for label in ('approach_50mm', 'approach_30mm', 'approach_15mm'):
-            report('沿直線接近物件')
-            step(label, W[label], guard=close, speed=40, precision=30)
-        report('到達夾取位置，修正舵機靜差')
-        q = step('grasp', W['grasp'], guard=close, speed=30, precision=30, correct=True, tolerance=3)
+            report('流暢沿直線接近物件')
+            fast_step(label, W[label], guard=close, speed_ticks_per_s=200.0, wait_settle=(label == 'approach_15mm'))
+        report('到達夾取位置，鎖定左固定牙貼邊姿態並修正靜差')
+        q = step('grasp', W['grasp'], guard=close, speed=65, precision=48, correct=True, tolerance=3)
         Ttcp, fixed, moving, _ = geo.tcp(gr)
         G = geo.transforms(q)['gripper_link']
         local = np.array(p['plan']['grasp']['local_point_mm']) / 1000
@@ -807,7 +1004,7 @@ class KinematicGraspProgram:
         report('抬起 30 mm')
         lift_guard = self.guard(geo, table_floor=TABLE_FLOOR)
         # The held object's weight adds sag (shoulder 30-50 ticks measured); correct from measured joints.
-        q_lift = step('lift', W['lift'], guard=lift_guard, speed=30, precision=60, correct=True, tolerance=6)
+        q_lift = step('lift', W['lift'], guard=lift_guard, speed=65, precision=60, correct=True, tolerance=6)
         after = self.grasp.capture()
         tel = r.gripper_telemetry()
         G0, G1 = geo.transforms(q)['gripper_link'], geo.transforms(q_lift)['gripper_link']
@@ -815,6 +1012,7 @@ class KinematicGraspProgram:
         evidence = {'measured_lift_mm': round(lifted_mm, 1), 'gripper_position': tel['position'],
                     'gripper_load_signed_pwm': tel['load_signed_pwm'], 'empty_jaw_position_threshold': 1525}
         result['lift'] = evidence
+        result['lifted_mm'] = round(lifted_mm, 1)
         report('Argon ER 2 核對是否真的拿起來')
         evidence['shoulder_lift_sag_ticks'] = {'before_lift': sag_before['shoulder_lift'], 'lifted': self.sag['shoulder_lift']}
         verdict = self.brain.verify_grasp(p['query'], [reference, after], evidence, cancel)
@@ -835,21 +1033,21 @@ class KinematicGraspProgram:
             report('放回原位')
             # Back to 2 mm above the grasp pose: the object bottom just clears the table, never pressed into it.
             q_down, _, _ = pose_along(geo, W['grasp'], geo.n * 0.002, W['grasp'])
-            step('lowered', {n: int(round(q_down[n])) for n in BODY}, guard=lift_guard, speed=25, precision=60,
+            step('lowered', {n: int(round(q_down[n])) for n in BODY}, guard=lift_guard, speed=60, precision=60,
                  correct=True, tolerance=4)
             down = self.grasp.capture()
-            if cancel.wait(.6):
+            if cancel.wait(.25):
                 raise RuntimeError('已停止')
             report('鬆開夾爪')
             back = self.guard(geo, table_floor=TABLE_FLOOR)
 
             def retreat():
-                for label in ('approach_15mm', 'approach_30mm', 'approach_50mm', 'approach_70mm', 'above_pregrasp'):
-                    step('retreat_' + label, W[label], guard=back, speed=40, precision=45)
+                for label in ('approach_30mm', 'approach_70mm', 'above_pregrasp'):
+                    fast_step('retreat_' + label, W[label], guard=back, speed_ticks_per_s=280.0, wait_settle=False)
                 # The empty-jaw image must not show the placed object or table marks between the fingers.
                 check_pose = dict(HOME, shoulder_pan=HOME['shoulder_pan'] + EMPTY_CHECK_PAN_OFFSET)
                 self.screen_transit(geo, {n: W['above_pregrasp'][n] for n in BODY}, check_pose, obj=obj, gripper_raw=gr)
-                step('empty_check_view', check_pose, guard=free, speed=60, precision=45)
+                fast_step('empty_check_view', check_pose, guard=free, speed_ticks_per_s=340.0, wait_settle=True)
             result['release'] = self.grasp.release(down, report, cancel, support_verified=True, retreat=retreat)
         result['completed'] = True
         self.log({'type': 'result', **result})

@@ -8,7 +8,7 @@ def load_provider_credentials(root):
     if not path.is_file():return
     for line in path.read_text().splitlines():
         name,sep,value=line.strip().partition('=')
-        if sep and name in ('TYPESAFE_API_KEY','JEV_API_KEY','GEMINI_API_KEY','GOOGLE_API_KEY'):
+        if sep and name in ('TYPESAFE_API_KEY','JEV_API_KEY','GEMINI_API_KEY','GOOGLE_API_KEY','FAL_KEY','WORLD_LABS_API_KEY','DREAMLABS_API_KEY','DREAM_API_KEY'):
             value=value.strip()
             if len(value)>=2 and value[0]==value[-1] and value[0] in ('"',"'"):
                 value=value[1:-1]

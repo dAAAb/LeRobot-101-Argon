@@ -56,19 +56,31 @@ async function boundedJson<T>(
   }
 }
 
+const EXTENDED_TIMEOUT_PREFIXES = [
+  '/api/real-to-sim/',
+  '/api/er2/',
+  '/api/motiongpt/',
+  '/api/brain/',
+];
+
 export async function controllerRequest<T>(
   path: string,
   body: unknown,
   token: Token,
   fetcher: Fetcher = fetch,
-  timeoutMs = 6000,
+  timeoutMs?: number,
 ): Promise<T> {
+  const effectiveTimeoutMs =
+    timeoutMs ??
+    (EXTENDED_TIMEOUT_PREFIXES.some((prefix) => path.startsWith(prefix))
+      ? 120_000
+      : 6000);
   async function session() {
     const data = await boundedJson<{ token: string }>(
       '/api/session',
       {},
       fetcher,
-      timeoutMs,
+      effectiveTimeoutMs,
     );
     if (typeof data.token !== 'string' || !data.token)
       throw new ControllerRequestError(0, '本機控制器尚未就緒');
@@ -90,7 +102,7 @@ export async function controllerRequest<T>(
         body: body === undefined ? undefined : JSON.stringify(body),
       },
       fetcher,
-      timeoutMs,
+      effectiveTimeoutMs,
     );
   try {
     return await send();

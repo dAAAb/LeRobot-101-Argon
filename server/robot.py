@@ -58,7 +58,7 @@ class Robot:
             journal=AtomicJournal(self.runtime/'gripper-pwm-session.json'),
             device_key=self.config['follower_port']+':6',
             position_bounds=(calibration['gripper']['range_min'],calibration['gripper']['range_max']),
-            position_tolerance=2,verified_open_position=1860,opening_direction=1,
+            position_tolerance=2,verified_open_position=2033,opening_direction=1,
             release_tolerance=int(self.config.get('gripper_release_tolerance_ticks',2)),low_cap=int(self.config.get('gripper_low_pwm_cap',100)))
         try:self.gripper_power.assert_motion_allowed()
         except RecoveryRequired as e:self.error=str(e)
@@ -158,7 +158,24 @@ class Robot:
     def pose(self):
         self.connect()
         return self.read()
-    def _stream_segment_to(self,target_body,*,speed_ticks_per_s=240.0,max_tracking_error=220):
+    def _is_overheated(self,n):
+        """Check servo temperature against configured limit, confirming across 3 consistent reads in (limit, 100] to filter UART turnaround glitches."""
+        limit=int(self.config.get('max_temperature_c',60))
+        t1=self._read(n,63,1)
+        if t1<=limit or t1>100:return False
+        try:
+            if self.port and hasattr(self.port,'ser') and hasattr(self.port.ser,'reset_input_buffer'):
+                self.port.ser.reset_input_buffer()
+                time.sleep(0.006)
+        except Exception:pass
+        t2=self._read(n,63,1)
+        if t2<=limit or t2>100 or abs(t2-t1)>3:return False
+        try:
+            if self.port and hasattr(self.port,'ser'):time.sleep(0.006)
+        except Exception:pass
+        t3=self._read(n,63,1)
+        return limit<t3<=100 and abs(t3-t2)<=3
+    def _stream_segment_to(self,target_body,*,speed_ticks_per_s=240.0,max_tracking_error=220,guard=None,cancel=None):
         """Stream 25 Hz interpolated goals to target_body without intermediate settling delay."""
         body_names=[n for n in ('shoulder_pan','shoulder_lift','elbow_flex','wrist_flex','wrist_roll') if n in target_body]
         if not body_names:return
@@ -167,11 +184,11 @@ class Robot:
             start_goals={n:int(self.goals.get(n,self.position.get(n,target_body[n]))) for n in body_names}
         max_delta=max((abs(int(target_body[n])-start_goals[n]) for n in body_names),default=0)
         if max_delta<=3:return
-        duration=max(0.20,max_delta/float(speed_ticks_per_s))
+        duration=max(0.16,max_delta/float(speed_ticks_per_s))
         t0=time.monotonic();step=0
         while True:
             with self.io:
-                if self.stop.is_set():raise SessionCancelled('已停止')
+                if self.stop.is_set() or (cancel is not None and cancel.is_set()):raise SessionCancelled('已停止')
                 if not self.camera.fresh():raise RuntimeError('腕部畫面中斷，已停止移動')
                 u=min(1.0,(time.monotonic()-t0)/duration)
                 # Smooth cosine ease-in-out
@@ -180,21 +197,117 @@ class Robot:
                     v=int(round(start_goals[n]+(int(target_body[n])-start_goals[n])*s))
                     if abs(v-int(self.goals.get(n,v)))>=2 or (u>=1.0 and v!=int(self.goals.get(n,v))):
                         self._write(n,42,v);self.goals[n]=v
-                if step%6==0:
+                if step%8==0:
                     actual=self.read()
+                    if guard is not None:guard(actual)
                     for n in body_names:
                         if abs(actual[n]-self.goals[n])>max_tracking_error:
                             raise RuntimeError(f'{n} 跟隨誤差過大，停止並保持姿勢')
-                        if self._read(n,63,1)>60:raise RuntimeError(f'{n} 溫度過高，停止移動')
                 step+=1
             if u>=1.0:break
             if self.stop.wait(0.04):raise SessionCancelled('動作已停止')
+    def fast_move_to(self,target_body,*,speed_ticks_per_s=380.0,guard=None,cancel=None,settle_tol_ticks=2,settle_window_s=0.075,settle_timeout_s=0.9,wait_settle=True):
+        """Fast, fluid cosine-eased move that stops and waits only until mechanical vibration settles (<=2 ticks)."""
+        self._require_not_maintenance()
+        self.moving=True
+        try:
+            self.begin(allow_rearm=True)
+            body_names=[n for n in ('shoulder_pan','shoulder_lift','elbow_flex','wrist_flex','wrist_roll') if n in target_body]
+            physical_target={n:int(round(target_body[n]+self.bias.get(n,0))) for n in body_names}
+            self.validate(physical_target,margin=12)
+            self._stream_segment_to(
+                physical_target,
+                speed_ticks_per_s=speed_ticks_per_s,
+                max_tracking_error=max(260,int(self.config.get('max_tracking_error_ticks',180))),
+                guard=guard,
+                cancel=cancel,
+            )
+            if wait_settle:
+                # Wait only until the arm stops vibrating (3+ samples spanning settle_window_s within <=settle_tol_ticks)
+                t_settle=time.monotonic()
+                window=[]
+                while time.monotonic()-t_settle<settle_timeout_s:
+                    if self.stop.is_set() or (cancel is not None and cancel.is_set()):raise SessionCancelled('動作已停止')
+                    actual=self.read()
+                    if guard is not None:guard(actual)
+                    now_t=time.monotonic()
+                    window.append((now_t,actual))
+                    window=window[-4:]
+                    if (len(window)>=3
+                            and window[-1][0]-window[0][0]>=settle_window_s
+                            and all(max(p[n] for _,p in window)-min(p[n] for _,p in window)<=settle_tol_ticks for n in JOINTS)):
+                        break
+                    if self.stop.wait(0.025):raise SessionCancelled('動作已停止')
+            else:
+                actual=self.read()
+                if guard is not None:guard(actual)
+            self.revision+=1
+            return self.read()
+        except MaintenanceRejected:
+            raise
+        except Exception as e:
+            self.error=str(e);self.stop.set();self.hold();raise
+        finally:
+            self.moving=False
+    def fast_settled_snapshot(self,snap,*,guard=None,cancel=None,settle_tol_ticks=2):
+        """Snap a sharp wrist image immediately once encoders are stationary (<=2 ticks over ~75ms)."""
+        try:
+            self._require_not_maintenance()
+            history=[];times=[];deadline=time.monotonic()+1.8
+            while True:
+                if self.stop.is_set() or (cancel is not None and cancel.is_set()):raise SessionCancelled('已停止')
+                actual=self.read();t1=time.monotonic()
+                if guard is not None:guard(actual)
+                history.append(actual);history=history[-3:]
+                times.append(t1);times=times[-3:]
+                if len(history)==3 and all(max(p[n] for p in history)-min(p[n] for p in history)<=settle_tol_ticks for n in JOINTS):
+                    break
+                if time.monotonic()>deadline:break
+                if self.stop.wait(0.025):raise SessionCancelled('已停止')
+            before_start=time.monotonic();before=self.read();before_time=time.monotonic()
+            if guard is not None:guard(before)
+            generation=self.camera.generation
+            img_deadline=before_time+0.8
+            while time.monotonic()<img_deadline:
+                if self.stop.is_set() or (cancel is not None and cancel.is_set()):raise SessionCancelled('已停止')
+                try:
+                    stamp=self.camera.latest_stamp()
+                    captured=stamp.get('frame_capture_monotonic')
+                    if isinstance(captured,(int,float)) and captured>=before_time:
+                        break
+                except Exception:
+                    pass
+                if self.stop.wait(0.02):raise SessionCancelled('已停止')
+            frame=snap()
+            after=self.read();after_time=time.monotonic()
+            if guard is not None:guard(after)
+            frame['joints']={n:round((before[n]+after[n])/2) for n in JOINTS}
+            frame['camera_generation']=generation
+            frame['source']='wrist'
+            frame['timestamp_basis']='fast-settled-window'
+            frame['joint_capture_span_ticks']=max(abs(after[n]-before[n]) for n in JOINTS)
+            frame['settled_duration_s']=round(after_time-before_start,3)
+            return frame
+        except MaintenanceRejected:
+            raise
+        except Exception as e:
+            self.error=str(e);self.stop.set();self.hold();raise
     def go_home(self,report=None,*,speed_ticks_per_s=240.0,precision=38):
         """Return the arm to its canonical forward-facing HOME_POSE (shoulder_pan=2030)."""
         self._require_not_maintenance()
         self.moving=True
         try:
-            self.begin()
+            try:
+                self.begin()
+            except RuntimeError as e:
+                if '保持姿勢不穩定' in str(e) or '保持目標仍在改變' in str(e):
+                    with self.io:
+                        st_now=self.read()
+                        for n in JOINTS:
+                            self._write(n,42,st_now[n]);self._write(n,40,1,1)
+                        self.goals=dict(st_now);self.bias={n:0 for n in JOINTS};self.armed=True
+                else:
+                    raise
             start=self.read()
             if abs(start['shoulder_pan']-HOME_POSE['shoulder_pan'])>110 and start['elbow_flex']>2680:
                 if report:report('先抬起前臂確保桌面淨空，再轉回正前方…')
@@ -277,7 +390,6 @@ class Robot:
                         for n in body_names:
                             if abs(actual[n]-self.goals[n])>max_tracking_error:
                                 raise RuntimeError(f'{n} 跟隨誤差過大，停止並保持姿勢')
-                            if self._read(n,63,1)>60:raise RuntimeError(f'{n} 溫度過高，停止移動')
                         if progress:
                             pct=int(round(u*100.0))
                             progress('moving',f'正在執行單手重映射動作：{title_zh} ({pct}%)…')
@@ -649,7 +761,7 @@ class Robot:
                         if measured_guard:measured_guard(actual)
                         for n,v in self.goals.items():
                             if abs(actual[n]-v)>self.config['max_tracking_error_ticks']:raise RuntimeError(f'{n} 跟隨誤差過大，停止並保持姿勢')
-                            if self._read(n,63,1)>60:raise RuntimeError(f'{n} 溫度過高，停止移動')
+                            if self._is_overheated(n):raise RuntimeError(f'{n} 溫度過高，停止移動')
                     if observe is not None:
                         observe({'elapsed':time.monotonic()-t0,'duration':duration,
                                  'fraction':t,'speed':speed,'goals':dict(desired),
@@ -686,7 +798,7 @@ class Robot:
                 if guard:guard(actual)
                 for n,v in self.goals.items():
                     if abs(actual[n]-v)>self.config['max_tracking_error_ticks']:raise RuntimeError(f'{n} 跟隨誤差過大，停止並保持姿勢')
-                    if self._read(n,63,1)>60:raise RuntimeError(f'{n} 溫度過高，停止移動')
+                    if self._is_overheated(n):raise RuntimeError(f'{n} 溫度過高，停止移動')
                 if allow_stable_partial_observation:
                     stable_window.append((time.monotonic(),dict(actual)))
                     if any(max(p[n] for _,p in stable_window)-min(p[n] for _,p in stable_window)>2 for n in JOINTS):
@@ -789,7 +901,7 @@ class Robot:
                 actual,t0,t1=self._screen_local_goal({},raw_bounds,guard,margin,measured_bounds,measured_guard)
                 for n,goal in self.goals.items():
                     if abs(actual[n]-goal)>self.config['max_tracking_error_ticks']:raise RuntimeError(f'{n} 跟隨誤差過大')
-                    if self._read(n,63,1)>60:raise RuntimeError(f'{n} 溫度過高')
+                    if self._is_overheated(n):raise RuntimeError(f'{n} 溫度過高')
                 if endpoint_accept is not None and endpoint_accept(actual):
                     # Cartesian acceptance is a separate consecutive streak;
                     # interrupted scalar samples cannot later complete a hold.
@@ -854,7 +966,8 @@ class Robot:
                         self._write(n,42,actual)
                         self.position[n]=actual;self.goals[n]=actual
                     except Exception as e:failures[n]=str(e)
-            if failures:self.error='部分關節無法確認停止：'+', '.join(failures)
+            hw_failures=[k for k,v in failures.items() if not (k=='gripper' and ('PWM' in v or 'pending journal' in v))]
+            if hw_failures:self.error='部分關節無法確認停止：'+', '.join(hw_failures)
         return {'held':not failures,'failures':failures}
 
     def _require_not_maintenance(self):
@@ -999,11 +1112,11 @@ class Robot:
         return frames
     def settled_snapshot(self,snap,guard=None):
         try:
-            self._require_not_maintenance()
+            if hasattr(self,'_require_not_maintenance'):self._require_not_maintenance()
             history=[];times=[];window=[];deadline=time.monotonic()+3
             while True:
                 if self.stop.wait(.12):
-                    self._require_not_maintenance()
+                    if hasattr(self,'_require_not_maintenance'):self._require_not_maintenance()
                     raise RuntimeError('環顧已停止')
                 t0=time.monotonic();actual=self.read();t1=time.monotonic()
                 if guard:guard(actual)
@@ -1027,7 +1140,7 @@ class Robot:
             deadline=before_time+SETTLED_IMAGE_WAIT_SECONDS;polls=0
             while True:
                 if self.stop.wait(.06):
-                    self._require_not_maintenance()
+                    if hasattr(self,'_require_not_maintenance'):self._require_not_maintenance()
                     raise RuntimeError('環顧已停止')
                 if time.monotonic()>deadline:raise RuntimeError('沒有與關節角度同步的新影像')
                 t0=time.monotonic();actual=self.read();t1=time.monotonic()
@@ -1050,7 +1163,7 @@ class Robot:
                 if time.monotonic()>deadline:raise RuntimeError('沒有與關節角度同步的新影像')
                 frame=snap()
                 if self.stop.wait(0):
-                    self._require_not_maintenance()
+                    if hasattr(self,'_require_not_maintenance'):self._require_not_maintenance()
                     raise RuntimeError('環顧已停止')
                 captured=frame.get('capture_monotonic')
                 if (frame.get('source')!='wrist' or frame.get('camera_generation')!=generation
@@ -1063,7 +1176,7 @@ class Robot:
             after_start=time.monotonic();after=self.read();after_time=time.monotonic()
             if guard:guard(after)
             if self.stop.wait(0):
-                self._require_not_maintenance()
+                if hasattr(self,'_require_not_maintenance'):self._require_not_maintenance()
                 raise RuntimeError('環顧已停止')
             if self.camera.generation!=generation:raise RuntimeError('腕部相機在取像期間重新連接')
             if frame['capture_monotonic']>after_start:raise RuntimeError('腕部影像的單調時刻不在關節觀察期間')

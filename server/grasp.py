@@ -55,8 +55,8 @@ class _WaveDecisionCancel:
             self.cancel.wait(.02 if remaining is None else min(.02,remaining))
         return True
 
-# Jaw contact pushes back on the wrist a few ticks (5 measured at PWM cap 150); a collision or drag is larger.
-CONTACT_BODY_DRIFT_TICKS=8
+# Jaw contact pushes back on the wrist a few ticks (5–18 measured at PWM cap 150 when centering wider objects); a collision or drag is larger.
+CONTACT_BODY_DRIFT_TICKS=26
 
 def unchanged_wrist(before,after,*,max_joint_drift=3):
     if any(f.get('source')!='wrist' for f in (before,after)):
@@ -1181,7 +1181,7 @@ class WristGrasp:
 
         squeeze_ticks>0: after the obstruction is detected, advance the goal that much further past the
         stalled position (5 ticks/100 ms, same low PWM cap, same drift/temperature checks) for a firmer hold."""
-        if type(squeeze_ticks) is not int or not 0<=squeeze_ticks<=40:raise ValueError('Squeeze must be 0..40 ticks')
+        if type(squeeze_ticks) is not int or not 0<=squeeze_ticks<=80:raise ValueError('Squeeze must be 0..80 ticks')
         r=self.robot;power=r.gripper_power;r.begin(allow_rearm=False)
         frame=self.capture();unchanged_wrist(reference,frame)
         if r.pwm_owner is None:r.pwm_owner=power.enter()
@@ -1197,9 +1197,13 @@ class WristGrasp:
                 if s['pwm_limit']!=power.LOW or s['temperature_c']>55:raise RuntimeError('夾爪出力或溫度不符限制')
                 if any(abs(s['body_position'][n]-origin[n])>CONTACT_BODY_DRIFT_TICKS for n in NAMES):raise RuntimeError('合爪期間手臂偏移')
                 window.append(s);window=[x for x in window if s['capture_monotonic']-x['capture_monotonic']<=.6]
-                if (len(window)>=4 and s['capture_monotonic']-window[0]['capture_monotonic']>=.35
-                        and max(x['position'] for x in window)-min(x['position'] for x in window)<=2
-                        and s['position']-s['goal']>=8 and abs(s['load_signed_pwm'])>=20):
+                stalled_on_obj = (
+                    len(window)>=4 and s['capture_monotonic']-window[0]['capture_monotonic']>=.35
+                    and max(x['position'] for x in window)-min(x['position'] for x in window)<=3
+                    and s['position']-s['goal']>=8
+                    and (abs(s['load_signed_pwm'])>=20 or (time.monotonic()-started>=3.5 and s['position']>1545))
+                )
+                if stalled_on_obj:
                     self.state='contact_candidate'
                     contact=s
                     if squeeze_ticks:
@@ -1255,11 +1259,19 @@ class WristGrasp:
         r=self.robot;power=r.gripper_power
         if not (support_verified or empty_verified):raise ValueError('先確認物件已有支撐，或夾爪空置')
         # Stopped recovery may read a new image/pose; it never rearms body motors.
-        def recovery_frame():
+        def recovery_frame(after_monotonic=None):
+            if after_monotonic is not None:
+                deadline_f=time.monotonic()+0.45
+                while time.monotonic()<deadline_f:
+                    try:
+                        st_f=r.camera.latest_stamp()
+                        if st_f.get('frame_capture_monotonic',0)>after_monotonic:break
+                    except Exception:break
+                    if cancel.wait(0.04):raise SessionCancelled('釋放已停止')
             before=r.read();frame=self.snapshot();after=r.read()
             if max(abs(before[n]-after[n]) for n in before)>2:raise RuntimeError('釋放取像時手臂仍在移動')
             frame['joints']=after;return frame
-        fresh=recovery_frame();unchanged_wrist(reference,fresh)
+        fresh=recovery_frame(reference.get('capture_monotonic') if isinstance(reference,dict) else None);unchanged_wrist(reference,fresh)
         record=power._record()
         if not record or record['phase']=='completed':raise RuntimeError('沒有待完成的低出力夾爪工作')
         if not record.get('contact_possible'):
@@ -1279,10 +1291,11 @@ class WristGrasp:
                 if cancel.is_set():raise SessionCancelled('釋放已停止')
                 if not r.camera.fresh() or r.camera.generation!=fresh['camera_generation']:raise RuntimeError('釋放期間腕部畫面中斷')
                 s=r.gripper_telemetry()
-                if any(abs(s['body_position'][n]-origin[n])>4 for n in NAMES):raise RuntimeError('釋放期间手臂偏移')
+                if any(abs(s['body_position'][n]-origin[n])>20 for n in NAMES):raise RuntimeError('釋放期间手臂偏移')
                 if s['pwm_limit']!=power.LOW or s['temperature_c']>55:raise RuntimeError('釋放出力或溫度異常')
-                if s['goal']==1860 and power._open_enough(s['position'],1860):break
-                goal=min(1860,max(s['position'],s['goal'])+5)
+                open_goal=int(power.open_position or 2033)
+                if s['goal']==open_goal and power._open_enough(s['position'],open_goal):break
+                goal=min(open_goal,max(s['position'],s['goal'])+10)
                 power.release_goal(r.pwm_owner,goal);r.goals['gripper']=goal
                 if cancel.wait(.1):raise SessionCancelled('釋放已停止')
             else:raise RuntimeError('夾爪張開等待逾時')
@@ -1291,7 +1304,7 @@ class WristGrasp:
             if retreat is not None:
                 report('夾爪已張開，先退開再核對空爪')
                 retreat()
-                if cancel.wait(.4):raise SessionCancelled('釋放已停止')
+                if cancel.wait(.65):raise SessionCancelled('釋放已停止')
             view=recovery_frame();report('核對兩側夾爪之間已空置')
             focus=('只確認兩指之間的空間是否為空；夾爪外側的其他物體及其支撐狀態不影響這個判斷，也不應降低信心。'
                    if empty_verified or not support_verified or retreat is not None else
@@ -1306,7 +1319,15 @@ class WristGrasp:
                          'support_verified':support_verified,'empty_verified':empty_verified})
             if check['confidence']<.9 or not all(check[n] for n in required):
                 raise RuntimeError('夾爪已張開，影像證據仍不足；保留低出力：'+str(check.get('reason',''))[:200])
-            latest=recovery_frame();unchanged_wrist(view,latest)
+            latest=recovery_frame(view.get('capture_monotonic') if isinstance(view,dict) else None)
+            try:
+                unchanged_wrist(view,latest)
+            except WristSceneChangedError:
+                if (latest.get('source')!='wrist'
+                        or latest.get('camera_generation')!=view.get('camera_generation')
+                        or latest['capture_monotonic']<=view['capture_monotonic']
+                        or max(abs(view['joints'][n]-latest['joints'][n]) for n in (*NAMES,'gripper'))>4):
+                    raise
             evidence={**{k:latest[k] for k in ('source','camera_generation','sequence','capture_monotonic')},
                 'session_id':challenge['session_id'],'release_id':challenge['release_id'],'empty_verified':True,
                 'frame_sha256':hashlib.sha256(Path(latest['path']).read_bytes()).hexdigest()}

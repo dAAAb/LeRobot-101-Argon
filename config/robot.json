@@ -5,8 +5,9 @@
   "wrist_capture_width": 1920,
   "model": "gemini-robotics-er-2-preview",
   "reasoning_effort": "high",
-  "max_ticks_per_second": 90,
-  "max_tracking_error_ticks": 90,
+  "max_ticks_per_second": 240,
+  "max_tracking_error_ticks": 180,
+  "max_temperature_c": 70,
   "scan_delta_ticks": 70,
   "grasp_calibration": null,
   "experimental_pick_enabled": true,
@@ -27,6 +28,6 @@
   "kinematic_model": "config/calibration/kinematic-model-20261002.json",
   "kinematic_model_global": false,
   "gripper_release_tolerance_ticks": 5,
-  "gripper_low_pwm_cap": 150,
+  "gripper_low_pwm_cap": 260,
   "grasp_backend": "kinematic"
 }

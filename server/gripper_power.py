@@ -109,8 +109,8 @@ class GripperPWMSession:
             raise ValueError('Contact lifecycle requires a verified open position and opening direction')
         release_tolerance = position_tolerance if release_tolerance is None else release_tolerance
         if (type(release_tolerance) is not int or not position_tolerance <= release_tolerance <= 6 or
-                type(low_cap) is not int or not 100 <= low_cap <= 200):
-            raise ValueError('Release tolerance must be 0..6 ticks and the low cap 100..200')
+                type(low_cap) is not int or not 100 <= low_cap <= 300):
+            raise ValueError('Release tolerance must be 0..6 ticks and the low cap 100..300')
         # Under the low cap the jaw can stall a few ticks short of the verified open goal (servo
         # deadband). The open check accepts that shortfall in the OPENING direction only.
         self.release_tolerance = release_tolerance
